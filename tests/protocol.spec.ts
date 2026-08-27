@@ -1,0 +1,904 @@
+import { describe, expect, it } from 'vitest'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
+import { CallId, MessageId } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
+import {
+  AppServerEventMapper,
+  appServerDynamicTools,
+  appServerHistory,
+  appServerToolResults,
+  assertCompletedTurn,
+  codexFailureCode,
+  extendAppServerHistory,
+  harnessToolCall,
+} from '../src/protocol.ts'
+import type { CodexAppServerEvent } from '../src/runner.ts'
+
+function options(overrides: Partial<GenerateOptions> = {}): GenerateOptions {
+  return {
+    provider: 'codex-local',
+    model: 'gpt-5.6-sol',
+    messages: [{
+      id: MessageId('user-1'),
+      role: 'user',
+      source: { kind: 'user' },
+      content: [{ type: 'text', text: 'hello' }],
+    }],
+    ...overrides,
+  }
+}
+
+function skillCatalog(names: readonly string[]): GenerateOptions['messages'][number] {
+  return {
+    id: MessageId('skill-catalog'),
+    role: 'user',
+    source: {
+      kind: 'skill-catalog',
+      form: 'catalog',
+      entries: names.map(name => ({ name, description: `${name} description` })),
+    } as never,
+    content: [{ type: 'text', text: 'Harness skill catalog' }],
+  }
+}
+
+describe('App Server protocol translation', () => {
+  const image = {
+    attachmentId: AttachmentId('image-1'),
+    mediaType: 'image/png' as const,
+    bytes: 123,
+    width: 20,
+    height: 10,
+    name: 'diagram.png',
+  }
+  const marker = {
+    kind: 'dsh-image-attachment',
+    version: 1,
+    attachment: {
+      attachmentId: 'image-1',
+      mediaType: 'image/png',
+      bytes: 123,
+      width: 20,
+      height: 10,
+      name: 'diagram.png',
+    },
+  }
+
+  it.each([
+    [[{ type: 'image', attachment: image }], [{ type: 'input_image', image_url: marker }]],
+    [
+      [
+        { type: 'text', text: 'before' },
+        { type: 'image', attachment: image },
+        { type: 'text', text: 'after' },
+      ],
+      [
+        { type: 'input_text', text: 'before' },
+        { type: 'input_image', image_url: marker },
+        { type: 'input_text', text: 'after' },
+      ],
+    ],
+  ])('preserves image-bearing user content as one ordered message', (content, expected) => {
+    const history = appServerHistory(options({
+      messages: [{
+        id: MessageId('user-images'),
+        role: 'user',
+        source: { kind: 'user' },
+        content: content as GenerateOptions['messages'][number]['content'],
+      }],
+    }))
+    expect(history).toEqual([{ type: 'message', role: 'user', content: expected }])
+    expect(JSON.stringify(history)).not.toContain('base64')
+    expect(JSON.stringify(history)).not.toContain('data:image')
+  })
+
+  it('encodes nested image-bearing tool results as ordered structured output', () => {
+    const callId = CallId('call-images')
+    const history = appServerHistory(options({
+      messages: [{
+        id: MessageId('tool-images'),
+        role: 'user',
+        source: { kind: 'tool', callId },
+        content: [{
+          type: 'tool-result',
+          toolCallId: callId,
+          content: [
+            { type: 'text', text: 'before' },
+            {
+              type: 'tool-result',
+              toolCallId: CallId('nested-call'),
+              content: [
+                { type: 'image', attachment: image },
+                { type: 'text', text: 'inside' },
+              ],
+              isError: true,
+            },
+            { type: 'text', text: 'after' },
+          ],
+        }],
+      }],
+    }))
+    const output = [
+      { type: 'input_text', text: 'before' },
+      { type: 'input_text', text: 'Tool error:\n' },
+      { type: 'input_image', image_url: marker },
+      { type: 'input_text', text: 'inside' },
+      { type: 'input_text', text: 'after' },
+    ]
+    expect(history).toEqual([{
+      type: 'function_call_output', call_id: 'call-images', output,
+    }])
+    expect(appServerToolResults(options({
+      messages: [{
+        id: MessageId('tool-images'), role: 'user', source: { kind: 'tool', callId },
+        content: [{
+          type: 'tool-result', toolCallId: callId,
+          content: [{ type: 'image', attachment: image }],
+        }],
+      }],
+    }))).toEqual([{ callId: 'call-images', output: [
+      { type: 'input_image', image_url: marker },
+    ], success: true }])
+    expect(JSON.stringify(history)).not.toContain('base64')
+  })
+
+  it('matches pending callbacks against the exact budgeted tool output', () => {
+    const callId = CallId('call-budgeted-image')
+    const request = options({
+      messages: [{
+        id: MessageId('tool-budgeted-image'),
+        role: 'user',
+        source: { kind: 'tool', callId },
+        content: [{
+          type: 'tool-result',
+          toolCallId: callId,
+          content: [{ type: 'image', attachment: image }],
+        }],
+      }],
+    })
+    const modelHistory = [{
+      type: 'function_call_output',
+      call_id: String(callId),
+      output: [{ type: 'input_text', text: 'bounded omission' }],
+    }]
+
+    expect(appServerToolResults(request, modelHistory)).toEqual([{
+      callId: String(callId),
+      output: [{ type: 'input_text', text: 'bounded omission' }],
+      success: true,
+    }])
+  })
+
+  it.each(['assistant', 'system'] as const)(
+    'rejects non-replayed %s image content',
+    (role) => {
+      expect(() => appServerHistory(options({
+        messages: [{
+          id: MessageId(`${role}-image`),
+          role,
+          source: role === 'assistant'
+            ? { kind: 'model', provider: 'other-provider', model: 'other-model' }
+            : { kind: 'system' },
+          content: [{ type: 'image', attachment: image }],
+        } as GenerateOptions['messages'][number]],
+      }))).toThrowError(expect.objectContaining({ code: 'UNSUPPORTED_CONTENT' }))
+    },
+  )
+
+  it('preserves ordered Harness messages, tool calls, and tool results', () => {
+    const callId = CallId('call-1')
+    const history = appServerHistory(options({
+      messages: [
+        {
+          id: MessageId('user-1'),
+          role: 'user',
+          source: { kind: 'user' },
+          content: [{ type: 'text', text: 'read it' }],
+        },
+        {
+          id: MessageId('assistant-1'),
+          role: 'assistant',
+          source: { kind: 'model', provider: 'other-provider', model: 'other-model' },
+          content: [
+            {
+              type: 'codex-action',
+              actionId: 'native-1',
+              actionType: 'commandExecution',
+              category: 'action',
+              phase: 'completed',
+              protocolEvent: 'item/completed',
+              snapshot: { command: 'pwd' },
+            },
+            { type: 'tool-call', id: callId, name: 'read_file', arguments: '{"path":"a.txt"}' },
+          ],
+        },
+        {
+          id: MessageId('tool-1'),
+          role: 'user',
+          source: { kind: 'tool', callId },
+          content: [{
+            type: 'tool-result',
+            toolCallId: callId,
+            content: [{ type: 'text', text: 'contents' }],
+          }],
+        },
+      ],
+    }))
+
+    expect(history).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'read it' }],
+      },
+      {
+        type: 'function_call',
+        call_id: 'call-1',
+        namespace: 'deepseek_harness',
+        name: 'read_file',
+        arguments: '{"path":"a.txt"}',
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'call-1',
+        output: 'contents',
+      },
+    ])
+  })
+
+  it('reconstructs logged Harness skill calls through the labeled App Server alias', () => {
+    const callId = CallId('call-skill-1')
+    expect(appServerHistory(options({
+      messages: [{
+        id: MessageId('assistant-skill'),
+        role: 'assistant',
+        source: { kind: 'model', provider: 'other-provider', model: 'other-model' },
+        content: [{
+          type: 'tool-call',
+          id: callId,
+          name: 'skill',
+          arguments: '{"name":"domain-modeling"}',
+        }],
+      }],
+    }))).toEqual([{
+      type: 'function_call',
+      call_id: 'call-skill-1',
+      namespace: 'deepseek_harness',
+      name: 'harness_skill',
+      arguments: '{"name":"domain-modeling"}',
+    }])
+
+    const mapper = new AppServerEventMapper([], ['skill'])
+    mapper.toolCall({ id: callId, name: 'skill', arguments: '{"name":"domain-modeling"}' })
+    expect(mapper.replayState().items).toEqual([{
+      type: 'function_call',
+      call_id: 'call-skill-1',
+      namespace: 'deepseek_harness',
+      name: 'harness_skill',
+      arguments: '{"name":"domain-modeling"}',
+    }])
+  })
+
+  it('accepts pre-rc.8 direct replay state from existing sessions', () => {
+    const raw = {
+      type: 'reasoning',
+      encrypted_content: 'opaque',
+      summary: [{ type: 'summary_text', text: 'summary' }],
+    }
+    const history = appServerHistory(options({
+      messages: [{
+        id: MessageId('assistant-1'),
+        role: 'assistant',
+        source: {
+          kind: 'model',
+          provider: 'codex-local',
+          model: 'gpt-5.6-sol',
+          replayState: { kind: 'codex-app-server', version: 4, items: [raw], contextItems: [] },
+        },
+        content: [{ type: 'text', text: 'reconstructed text must not replace raw state' }],
+      }],
+    }))
+    expect(history).toEqual([raw])
+  })
+
+  it('uses rc.8 enveloped replay items instead of reconstructed assistant output', () => {
+    const raw = {
+      type: 'reasoning',
+      encrypted_content: 'opaque',
+      summary: [{ type: 'summary_text', text: 'summary' }],
+    }
+    const history = appServerHistory(options({
+      messages: [{
+        id: MessageId('assistant-envelope'),
+        role: 'assistant',
+        source: {
+          kind: 'model',
+          provider: 'codex-local',
+          model: 'gpt-5.6-sol',
+          replayState: {
+            response: {
+              kind: 'codex-app-server',
+              version: 4,
+              items: [raw],
+              contextItems: [],
+            },
+          },
+        },
+        content: [{ type: 'text', text: 'reconstructed text must not replace raw state' }],
+      }],
+    }))
+
+    expect(history).toEqual([raw])
+  })
+
+  it('removes unpaired custom Code Mode items from reconstructed replay', () => {
+    const pairedCall = {
+      type: 'custom_tool_call',
+      call_id: 'paired-call',
+      name: 'exec',
+      input: 'return 1',
+    }
+    const pairedOutput = {
+      type: 'custom_tool_call_output',
+      call_id: 'paired-call',
+      output: [{ type: 'input_text', text: '1' }],
+    }
+    const history = appServerHistory(options({
+      messages: [{
+        id: MessageId('assistant-custom-replay'),
+        role: 'assistant',
+        source: {
+          kind: 'model',
+          provider: 'codex-local',
+          model: 'gpt-5.6-sol',
+          replayState: {
+            response: {
+              kind: 'codex-app-server',
+              version: 4,
+              items: [
+                { type: 'custom_tool_call', call_id: 'orphan-call', name: 'exec', input: 'pending' },
+                pairedCall,
+                pairedOutput,
+                { type: 'custom_tool_call_output', call_id: 'orphan-output', output: [] },
+              ],
+              contextItems: [],
+            },
+          },
+        },
+        content: [{ type: 'text', text: 'fallback must not be used' }],
+      }],
+    }))
+
+    expect(history).toEqual([pairedCall, pairedOutput])
+  })
+
+  it('removes legacy native compaction state from reconstructed replay', () => {
+    const answer = {
+      type: 'message',
+      id: 'answer-1',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'answer' }],
+    }
+    const history = appServerHistory(options({
+      messages: [{
+        id: MessageId('assistant-1'),
+        role: 'assistant',
+        source: {
+          kind: 'model',
+          provider: 'codex-local',
+          model: 'gpt-5.6-sol',
+          replayState: {
+            response: {
+              kind: 'codex-app-server',
+              version: 4,
+              items: [
+                { type: 'compaction', encrypted_content: 'opaque' },
+                { type: 'context_compaction', encrypted_content: 'opaque-context' },
+                answer,
+              ],
+              contextItems: [],
+            },
+          },
+        },
+        content: [{ type: 'text', text: 'answer' }],
+      }],
+    }))
+
+    expect(history).toEqual([answer])
+  })
+
+  it('coalesces cumulative replay snapshots while preserving Harness results', () => {
+    const callId = CallId('call-1')
+    const firstReasoning = {
+      type: 'reasoning',
+      id: 'reasoning-1',
+      summary: [],
+      content: null,
+      encrypted_content: 'first-encoding',
+    }
+    const latestReasoning = {
+      type: 'reasoning',
+      id: 'reasoning-1',
+      summary: [],
+      encrypted_content: 'latest-encoding',
+    }
+    const call = {
+      type: 'function_call',
+      call_id: String(callId),
+      namespace: 'deepseek_harness',
+      name: 'read_file',
+      arguments: '{"path":"a.txt"}',
+    }
+    const secondReasoning = {
+      type: 'reasoning',
+      id: 'reasoning-2',
+      summary: [],
+      encrypted_content: 'second',
+    }
+    const source = (items: Record<string, unknown>[]) => ({
+      kind: 'model' as const,
+      provider: 'codex-local',
+      model: 'gpt-5.6-sol',
+      replayState: {
+        response: { kind: 'codex-app-server', version: 4, items, contextItems: [] },
+      },
+    })
+
+    const history = appServerHistory(options({
+      messages: [
+        {
+          id: MessageId('assistant-1'),
+          role: 'assistant',
+          source: source([firstReasoning, call]),
+          content: [{ type: 'tool-call', id: callId, name: 'read_file', arguments: call.arguments }],
+        },
+        {
+          id: MessageId('tool-1'),
+          role: 'user',
+          source: { kind: 'tool', callId },
+          content: [{
+            type: 'tool-result',
+            toolCallId: callId,
+            content: [{ type: 'text', text: 'Harness result' }],
+          }],
+        },
+        {
+          id: MessageId('assistant-2'),
+          role: 'assistant',
+          source: source([
+            latestReasoning,
+            call,
+            { type: 'function_call_output', call_id: String(callId), output: 'provider echo' },
+            secondReasoning,
+          ]),
+          content: [{ type: 'text', text: 'done' }],
+        },
+      ],
+    }))
+
+    expect(history).toEqual([
+      latestReasoning,
+      call,
+      { type: 'function_call_output', call_id: String(callId), output: 'Harness result' },
+      secondReasoning,
+    ])
+  })
+
+  it('advances the synchronized history without replacing Harness tool results', () => {
+    const history = [
+      { type: 'reasoning', id: 'reasoning-1', encrypted_content: 'old' },
+      { type: 'function_call_output', call_id: 'call-1', output: 'Harness result' },
+    ]
+
+    expect(extendAppServerHistory(history, [
+      { type: 'reasoning', id: 'reasoning-1', encrypted_content: 'new' },
+      { type: 'function_call_output', call_id: 'call-1', output: 'provider echo' },
+      { type: 'message', id: 'answer-1', role: 'assistant', content: [] },
+    ])).toEqual([
+      { type: 'reasoning', id: 'reasoning-1', encrypted_content: 'new' },
+      { type: 'function_call_output', call_id: 'call-1', output: 'Harness result' },
+      { type: 'message', id: 'answer-1', role: 'assistant', content: [] },
+    ])
+  })
+
+  it('extracts exact successful and failed Harness tool outcomes', () => {
+    const first = CallId('call-1')
+    const second = CallId('call-2')
+    expect(appServerToolResults(options({
+      messages: [{
+        id: MessageId('tool-results'),
+        role: 'user',
+        source: { kind: 'tool', callId: first },
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: first,
+            content: [{ type: 'text', text: 'ok' }],
+          },
+          {
+            type: 'tool-result',
+            toolCallId: second,
+            content: [{ type: 'text', text: 'broken' }],
+            isError: true,
+          },
+        ],
+      }],
+    }))).toEqual([
+      { callId: 'call-1', output: 'ok', success: true },
+      { callId: 'call-2', output: 'Tool error:\nbroken', success: false },
+    ])
+  })
+
+  it('ignores null-versus-absent changes in injected raw item echoes', () => {
+    const injected = {
+      type: 'reasoning',
+      id: 'reasoning-1',
+      summary: [],
+      content: null,
+      encrypted_content: 'opaque',
+    }
+    const mapper = new AppServerEventMapper([injected])
+    const echoed: CodexAppServerEvent = {
+      kind: 'notification',
+      method: 'rawResponseItem/completed',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        item: {
+          type: 'reasoning',
+          id: 'reasoning-1',
+          summary: [],
+          encrypted_content: 'opaque',
+        },
+      },
+    }
+
+    expect(mapper.accept(echoed)).toEqual([])
+    expect(mapper.replayState()).toEqual({
+      kind: 'codex-app-server',
+      version: 4,
+      items: [],
+      contextItems: [],
+    })
+  })
+
+  it('separates injected history, Codex context, and outputs across raw responses', () => {
+    const injected = {
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: 'hello' }],
+    }
+    const mapper = new AppServerEventMapper([injected])
+    const raw = (item: Record<string, unknown>): CodexAppServerEvent => ({
+      kind: 'notification',
+      method: 'rawResponseItem/completed',
+      params: { threadId: 'thread-1', turnId: 'turn-1', item },
+    })
+    const context = {
+      type: 'message',
+      id: 'context-1',
+      role: 'developer',
+      content: [{ type: 'input_text', text: 'Codex context' }],
+    }
+    const first = {
+      type: 'message',
+      id: 'assistant-1',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'first' }],
+    }
+    const second = {
+      type: 'message',
+      id: 'assistant-2',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'second' }],
+    }
+
+    expect(mapper.accept(raw({
+      ...injected,
+      id: 'provider-added-id',
+      internal_chat_message_metadata_passthrough: { turn_id: 'turn-1' },
+    }))).toEqual([])
+    expect(mapper.accept(raw(context))).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'block-end', block: expect.objectContaining({
+        type: 'codex-action',
+        actionType: 'context/injected',
+        category: 'context',
+      }) }),
+    ]))
+    expect(mapper.accept(raw(first))).toEqual([])
+    mapper.accept({
+      kind: 'notification',
+      method: 'rawResponse/completed',
+      params: { threadId: 'thread-1', turnId: 'turn-1', usage: null },
+    })
+    expect(mapper.accept(raw({ ...context, id: 'context-2' }))).toEqual([])
+    expect(mapper.accept(raw(first))).toEqual([])
+    expect(mapper.accept(raw(second))).toEqual([])
+
+    expect(mapper.replayState()).toEqual({
+      kind: 'codex-app-server',
+      version: 4,
+      items: [first, second],
+      contextItems: [context],
+    })
+  })
+
+  it.each(['compaction', 'compaction_trigger', 'context_compaction'])(
+    'marks a raw %s item as non-reconstructible provider trajectory',
+    (type) => {
+      const mapper = new AppServerEventMapper()
+      mapper.accept({
+        kind: 'notification',
+        method: 'rawResponseItem/completed',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: { type, encrypted_content: 'opaque' },
+        },
+      })
+
+      expect(mapper.canReuseThread()).toBe(false)
+      expect(mapper.replayState().items).toEqual([])
+    },
+  )
+
+  it('marks a native thread compaction notification as non-reusable', () => {
+    const mapper = new AppServerEventMapper()
+    mapper.accept({
+      kind: 'notification',
+      method: 'thread/compacted',
+      params: { threadId: 'thread-1', turnId: 'turn-1' },
+    })
+    expect(mapper.canReuseThread()).toBe(false)
+  })
+
+  it('maps the exact Harness catalog to dynamic tools', () => {
+    expect(appServerDynamicTools([{
+      name: 'read_file',
+      description: 'Read one file.',
+      parameters: {
+        type: 'object',
+        properties: { path: { type: 'string' } },
+        required: ['path'],
+        additionalProperties: false,
+      },
+    }])).toEqual([{
+      type: 'namespace',
+      name: 'deepseek_harness',
+      description: 'Tools provided by the outer DeepSeek Harness agent loop.',
+      tools: [{
+        type: 'function',
+        name: 'read_file',
+        description: 'Read one file.',
+        inputSchema: {
+          type: 'object',
+          properties: { path: { type: 'string' } },
+          required: ['path'],
+          additionalProperties: false,
+        },
+      }],
+    }])
+    expect(appServerDynamicTools(undefined)).toEqual([])
+  })
+
+  it('labels and bounds the outer Harness skill loader by its current catalog', () => {
+    const skill = {
+      name: 'skill',
+      description: 'Load one Harness skill.',
+      parameters: {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+        required: ['name'],
+      },
+    }
+    const messages = [skillCatalog(['domain-modeling', 'research'])]
+
+    expect(appServerDynamicTools([skill], messages)).toEqual([{
+      type: 'namespace',
+      name: 'deepseek_harness',
+      description: 'Tools provided by the outer DeepSeek Harness agent loop. The harness_skill alias loads only names from the Harness session catalog; use Codex native skill support for Codex skills.',
+      tools: [{
+        type: 'function',
+        name: 'harness_skill',
+        description: 'Load one Harness skill. This App Server alias is only for the outer Harness session catalog, not Codex-native skills.',
+        inputSchema: {
+          type: 'object',
+          properties: { name: { type: 'string', enum: ['domain-modeling', 'research'] } },
+          required: ['name'],
+        },
+      }],
+    }])
+    expect(appServerDynamicTools([skill])).toEqual([])
+
+    const event: Extract<CodexAppServerEvent, { kind: 'server-request' }> = {
+      kind: 'server-request',
+      id: 8,
+      method: 'item/tool/call',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        callId: 'call-skill-1',
+        namespace: 'deepseek_harness',
+        tool: 'harness_skill',
+        arguments: { name: 'domain-modeling' },
+      },
+      resolution: 'rejected',
+    }
+    expect(harnessToolCall(event, [skill], messages)).toEqual({
+      id: 'call-skill-1',
+      name: 'skill',
+      arguments: '{"name":"domain-modeling"}',
+    })
+    expect(() => harnessToolCall({
+      ...event,
+      params: { ...event.params, arguments: { name: 'imagegen' } },
+    }, [skill], messages)).toThrowError(expect.objectContaining({ code: 'UNKNOWN_TOOL' }))
+    expect(() => harnessToolCall({
+      ...event,
+      params: { ...event.params, tool: 'skill' },
+    }, [skill], messages)).toThrowError(expect.objectContaining({ code: 'UNKNOWN_TOOL' }))
+  })
+
+  it('renames Harness MCP tools off the prefix Codex reserves, and maps the call back', () => {
+    // App Server rejects the whole thread/start with "dynamic tool name is
+    // reserved" when a dynamic tool is declared under `mcp__`, which is the
+    // prefix Codex uses for the MCP servers it mounts itself. Harness names
+    // every MCP tool `mcp__<server>__<tool>`, so one MCP server configured in
+    // Harness used to take the entire provider down before the model saw
+    // anything at all.
+    const vaultTool = {
+      name: 'mcp__vault__vyibc-vault_list_configs',
+      description: 'List the configs the vault holds.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    }
+    const [namespace] = appServerDynamicTools([vaultTool]) as [{ tools: { name: string }[] }]
+    expect(namespace.tools[0]!.name).toBe('harness_mcp__vault__vyibc-vault_list_configs')
+    expect(namespace.tools[0]!.name.startsWith('mcp__')).toBe(false)
+
+    // The rename has to round-trip, or a renamed tool becomes an uncallable one.
+    const event: Extract<CodexAppServerEvent, { kind: 'server-request' }> = {
+      kind: 'server-request',
+      id: 11,
+      method: 'item/tool/call',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        callId: 'call-vault-1',
+        namespace: 'deepseek_harness',
+        tool: 'harness_mcp__vault__vyibc-vault_list_configs',
+        arguments: {},
+      },
+      resolution: 'rejected',
+    }
+    expect(harnessToolCall(event, [vaultTool])).toEqual({
+      id: 'call-vault-1',
+      name: 'mcp__vault__vyibc-vault_list_configs',
+      arguments: '{}',
+    })
+
+    // The original name must not still be callable, or the mapping is a
+    // suggestion rather than a rule.
+    expect(() => harnessToolCall({
+      ...event,
+      params: { ...event.params, tool: 'mcp__vault__vyibc-vault_list_configs' },
+    }, [vaultTool])).toThrowError(expect.objectContaining({ code: 'UNKNOWN_TOOL' }))
+  })
+
+  it('accepts only offered object-valued dynamic calls', () => {
+    const event: Extract<CodexAppServerEvent, { kind: 'server-request' }> = {
+      kind: 'server-request',
+      id: 7,
+      method: 'item/tool/call',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        callId: 'call-1',
+        namespace: 'deepseek_harness',
+        tool: 'read_file',
+        arguments: { path: 'a.txt' },
+      },
+      resolution: 'rejected',
+    }
+    const tools = [{ name: 'read_file', description: 'Read.', parameters: { type: 'object' } }]
+    expect(harnessToolCall(event, tools)).toEqual({
+      id: 'call-1',
+      name: 'read_file',
+      arguments: '{"path":"a.txt"}',
+    })
+    expect(() => harnessToolCall({ ...event, params: { ...event.params, tool: 'shell' } }, tools))
+      .toThrowError(expect.objectContaining({ code: 'UNKNOWN_TOOL' }))
+    expect(() => harnessToolCall({ ...event, params: { ...event.params, namespace: null } }, tools))
+      .toThrowError(expect.objectContaining({ code: 'UNKNOWN_TOOL' }))
+    expect(() => harnessToolCall({ ...event, params: { ...event.params, arguments: 'not-an-object' } }, tools))
+      .toThrowError(expect.objectContaining({ code: 'MALFORMED_RESPONSE' }))
+  })
+
+  it('shows an unnamespaced native call while suppressing the Harness-owned echo', () => {
+    const mapper = new AppServerEventMapper([], ['skill'])
+    const raw = (item: Record<string, unknown>): CodexAppServerEvent => ({
+      kind: 'notification',
+      method: 'rawResponseItem/completed',
+      params: { threadId: 'thread-1', turnId: 'turn-1', item },
+    })
+
+    expect(mapper.accept(raw({
+      type: 'function_call',
+      call_id: 'native-skill-1',
+      name: 'skill',
+      arguments: '{"name":"imagegen"}',
+    }))).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'block-end',
+        block: expect.objectContaining({
+          type: 'codex-action',
+          actionId: 'native-skill-1',
+          actionType: 'function_call',
+          phase: 'requested',
+        }),
+      }),
+    ]))
+    expect(mapper.accept(raw({
+      type: 'function_call',
+      call_id: 'harness-skill-1',
+      namespace: 'deepseek_harness',
+      name: 'harness_skill',
+      arguments: '{"name":"project-skill"}',
+    }))).toEqual([])
+  })
+
+  it('reports an unexpected unnamespaced callback as Codex trajectory', () => {
+    const mapper = new AppServerEventMapper([], ['skill'])
+    const chunks = mapper.accept({
+      kind: 'server-request',
+      id: 'native-skill-1',
+      method: 'item/tool/call',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        callId: 'native-skill-1',
+        namespace: null,
+        tool: 'skill',
+        arguments: { name: 'imagegen' },
+      },
+      resolution: 'rejected',
+    })
+
+    expect(chunks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'block-end',
+        block: expect.objectContaining({
+          type: 'codex-action',
+          actionId: 'native-skill-1',
+          actionType: 'item/tool/call',
+          phase: 'declined',
+        }),
+      }),
+    ]))
+  })
+
+  it('distinguishes successful completion from actual turn failure', () => {
+    const completed: CodexAppServerEvent = {
+      kind: 'notification',
+      method: 'turn/completed',
+      params: { turn: { id: 'turn-1', status: 'completed', error: null } },
+    }
+    expect(() => assertCompletedTurn(completed)).not.toThrow()
+    expect(() => assertCompletedTurn({
+      ...completed,
+      params: {
+        turn: { id: 'turn-1', status: 'failed', error: { message: 'status 401 unauthorized' } },
+      },
+    })).toThrowError(expect.objectContaining({ code: 'AUTH' }))
+  })
+
+  it.each([
+    ['maximum context length exceeded', 'CONTEXT_WINDOW_EXCEEDED'],
+    ['status 401 unauthorized', 'AUTH'],
+    ['quota exceeded', 'QUOTA'],
+    ['status 429 too many requests', 'RATE_LIMIT'],
+    ['status 503 service unavailable', 'SERVER'],
+    ['request timed out', 'TIMEOUT'],
+    ['connection reset', 'TRANSPORT'],
+  ])('classifies %s as %s', (message, code) => {
+    expect(codexFailureCode(message)).toBe(code)
+  })
+})
