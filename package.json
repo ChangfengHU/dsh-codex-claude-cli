@@ -1,6 +1,6 @@
 {
   "name": "dsh-codex-claude-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Use the coding-agent CLIs already logged in on this machine as DeepSeek Harness model routes. Codex App Server works today; Claude Code is next. Harness tools and skills bridge across, including MCP tools whose names collide with Codex's reserved prefix. · 把本机已登录的编码 agent CLI 当作 Harness 的模型路由。目前支持 Codex App Server,Claude Code 在做。Harness 的工具和技能照常桥接,含名字与 Codex 保留前缀冲突的 MCP 工具。",
   "type": "module",
   "repository": {

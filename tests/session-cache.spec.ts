@@ -135,7 +135,7 @@ describe('CodexSessionCache', () => {
     await second.discard()
   })
 
-  it('starts one turn and steers later inbox messages without rebuilding the thread', async () => {
+  it('starts one turn with every waiting inbox message instead of steering them', async () => {
     const { cache, runner, threads } = fixture()
     const firstUser = user('first')
     const firstAnswer = assistant('answer')
@@ -150,10 +150,16 @@ describe('CodexSessionCache', () => {
     ))
 
     expect(runner.open).toHaveBeenCalledOnce()
+    // Splitting these across turn/start + turn/steer races the turn: a short turn
+    // finishes first and the App Server rejects the steer with
+    // `no active turn to steer`, which fails the whole turn.
     expect(threads[0]?.requests[1]).toMatchObject({
-      input: [{ type: 'text', text: 'subagent report', text_elements: [] }],
-      steeringInputs: [[{ type: 'text', text: 'subagent settled', text_elements: [] }]],
+      input: [
+        { type: 'text', text: 'subagent report', text_elements: [] },
+        { type: 'text', text: 'subagent settled', text_elements: [] },
+      ],
     })
+    expect(threads[0]?.requests[1]?.steeringInputs).toBeUndefined()
     await second.discard()
   })
 

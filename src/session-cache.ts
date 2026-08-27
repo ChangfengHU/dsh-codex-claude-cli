@@ -208,11 +208,13 @@ class SessionLease {
       if (contents === undefined) return undefined
       this.clearIdleTimer()
       this.state = { kind: 'active' }
-      const [input, ...steeringInputs] = await hydrateUserInputs(request, contents)
-      return this.step(await this.threadTask, turnRequest(request, {
-        input: input!,
-        ...(steeringInputs.length === 0 ? {} : { steeringInputs }),
-      }))
+      // Every input here is known before the turn begins, so it all belongs in
+      // turn/start. Splitting it into turn/start plus follow-up turn/steer calls
+      // races the turn itself: a short turn can finish before the steer lands,
+      // and the App Server then rejects it with `no active turn to steer`,
+      // failing the whole turn. Steering is only for input that arrives mid-turn.
+      const input = (await hydrateUserInputs(request, contents)).flat()
+      return this.step(await this.threadTask, turnRequest(request, { input }))
     }
     const [resultItem, ...following] = suffix
     const toolResult = matchingToolResult(resultItem, previous.callId, request.toolResults)
