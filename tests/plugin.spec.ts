@@ -49,6 +49,10 @@ describe('plugin composition', () => {
       id: 'codex-local',
       name: 'Codex (local login)',
     })
+    expect(ctx.llm.listProviders()).toContainEqual({
+      id: 'claude-local',
+      name: 'Claude Code (local login)',
+    })
     const models = await ctx.llm.listModels('codex-local')
     expect(models.map(model => model.id)).toEqual([
       'gpt-5.6-sol',
@@ -110,6 +114,16 @@ describe('plugin composition', () => {
   it('rejects an explicitly empty model catalog', async () => {
     const ctx = await context()
     await expect(ctx.plugin(CodexAppServer, { models: [] })).rejects.toThrow('models must not be empty')
+  })
+
+  it('can disable Claude and rejects colliding provider routes', async () => {
+    const disabled = await context()
+    await disabled.plugin(CodexAppServer, { claudeEnabled: false })
+    expect(disabled.llm.listProviders().map(provider => provider.id)).not.toContain('claude-local')
+
+    const invalid = await context()
+    await expect(invalid.plugin(CodexAppServer, { claudeProvider: 'codex-local' }))
+      .rejects.toThrow(/claudeProvider.*distinct/u)
   })
 
   it('rejects a non-positive Codex web-search result cap', async () => {

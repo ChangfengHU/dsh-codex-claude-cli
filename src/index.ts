@@ -10,6 +10,9 @@ import { installSettingsSection } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
 import { CodexAppServerAdapter } from './adapter.ts'
 import type { CodexModel } from './adapter.ts'
+import { ClaudeCodeAdapter } from './claude-adapter.ts'
+import { ClaudeCodeRuntime } from './claude-runtime.ts'
+import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 import { SAFE_MODEL_ID, SAFE_REASONING_EFFORT } from './identifiers.ts'
 import { CodexAppServerRunner } from './runner.ts'
 import {
@@ -60,6 +63,16 @@ export {
   resolveCodexCapabilitySettings,
 } from './settings.ts'
 export type { CodexCapabilitySettings, ResolvedCodexCapabilitySettings } from './settings.ts'
+export { ClaudeCodeAdapter, claudePrompt } from './claude-adapter.ts'
+export type { ClaudeCodeAdapterOptions } from './claude-adapter.ts'
+export { ClaudeCodeRuntime } from './claude-runtime.ts'
+export type {
+  ClaudeCodeEvent,
+  ClaudeCodeModel,
+  ClaudeCodeRuntimeOptions,
+  ClaudeCodeRuntimePort,
+  ClaudeCodeStreamRequest,
+} from './claude-runtime.ts'
 
 export const name = 'llm-codex-app-server'
 export const inject = ['llm', 'subprocess', 'tools']
@@ -87,6 +100,16 @@ export interface Config extends CodexCapabilitySettings {
   maxCachedSessions?: number
   sessionIdleTimeoutMs?: number
   env?: Record<string, string>
+  claudeEnabled?: boolean
+  claudeProvider?: string
+  claudeDisplayName?: string
+  claudeExecutable?: string
+  claudeCwd?: string
+  claudePermissionMode?: PermissionMode
+  claudeTimeoutMs?: number
+  claudeModelCacheMs?: number
+  claudeMaxRetries?: number
+  claudeEnv?: Record<string, string>
 }
 
 const MODEL_MODALITIES = ['text', 'image'] as const
@@ -170,6 +193,8 @@ const modelSchema = z.object({
   defaultReasoningEffort: z.string(),
 })
 
+const CLAUDE_PERMISSION_MODES = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'] as const
+
 export const Config: z<Config> = z.object({
   provider: z.string().default('codex-local'),
   displayName: z.string().default('Codex (local login)'),
@@ -185,6 +210,16 @@ export const Config: z<Config> = z.object({
   sessionIdleTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(600_000),
   ...codexCapabilitySettingsFields,
   env: z.dict(z.string()).default({}),
+  claudeEnabled: z.boolean().default(true),
+  claudeProvider: z.string().default('claude-local'),
+  claudeDisplayName: z.string().default('Claude Code (local login)'),
+  claudeExecutable: z.string().default('claude'),
+  claudeCwd: z.string().default(process.cwd()),
+  claudePermissionMode: z.union(CLAUDE_PERMISSION_MODES).default('dontAsk'),
+  claudeTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(300_000),
+  claudeModelCacheMs: z.number().step(1).min(1).max(2_147_483_647).default(300_000),
+  claudeMaxRetries: z.number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+  claudeEnv: z.dict(z.string()).default({}),
 })
 
 interface ResolvedConfig {
@@ -202,6 +237,18 @@ interface ResolvedConfig {
   readonly sessionIdleTimeoutMs: number
   readonly capabilities: ResolvedCodexCapabilitySettings
   readonly env: Readonly<Record<string, string>>
+  readonly claude: {
+    readonly enabled: boolean
+    readonly provider: string
+    readonly displayName: string
+    readonly executable: string
+    readonly cwd: string
+    readonly permissionMode: PermissionMode
+    readonly timeoutMs: number
+    readonly modelCacheMs: number
+    readonly maxRetries: number
+    readonly env: Readonly<Record<string, string>>
+  }
 }
 
 const SAFE_ROUTE = /^[a-z0-9][a-z0-9._-]{0,79}$/u
@@ -220,10 +267,33 @@ function resolveConfig(config: Config): ResolvedConfig {
   const sessionIdleTimeoutMs = config.sessionIdleTimeoutMs ?? 600_000
   const capabilities = resolveCodexCapabilitySettings(config)
   const env = config.env ?? {}
+  const claude = {
+    enabled: config.claudeEnabled ?? true,
+    provider: config.claudeProvider ?? 'claude-local',
+    displayName: config.claudeDisplayName ?? 'Claude Code (local login)',
+    executable: config.claudeExecutable ?? 'claude',
+    cwd: config.claudeCwd ?? process.cwd(),
+    permissionMode: config.claudePermissionMode ?? 'dontAsk',
+    timeoutMs: config.claudeTimeoutMs ?? 300_000,
+    modelCacheMs: config.claudeModelCacheMs ?? 300_000,
+    maxRetries: config.claudeMaxRetries ?? 0,
+    env: config.claudeEnv ?? {},
+  } satisfies ResolvedConfig['claude']
   if (!SAFE_ROUTE.test(provider)) throw new Error('llm-codex-app-server: provider is not a safe route id')
   if (displayName.trim().length === 0) throw new Error('llm-codex-app-server: displayName must not be empty')
   if (!SAFE_ROUTE.test(modelProvider)) {
     throw new Error('llm-codex-app-server: modelProvider is not a safe Codex provider id')
+  }
+  if (!SAFE_ROUTE.test(claude.provider) || claude.provider === provider) {
+    throw new Error('llm-codex-app-server: claudeProvider must be a safe route id distinct from provider')
+  }
+  if (claude.displayName.trim().length === 0 || claude.executable.trim().length === 0 || claude.cwd.trim().length === 0) {
+    throw new Error('llm-codex-app-server: Claude display name, executable, and cwd must not be empty')
+  }
+  if (!Number.isSafeInteger(claude.timeoutMs) || claude.timeoutMs <= 0
+    || !Number.isSafeInteger(claude.modelCacheMs) || claude.modelCacheMs <= 0
+    || !Number.isSafeInteger(claude.maxRetries) || claude.maxRetries < 0) {
+    throw new Error('llm-codex-app-server: Claude timeout/cache/retry values are invalid')
   }
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) {
     throw new Error('llm-codex-app-server: timeoutMs must be a positive finite number')
@@ -299,6 +369,7 @@ function resolveConfig(config: Config): ResolvedConfig {
     sessionIdleTimeoutMs,
     capabilities,
     env,
+    claude,
   }
 }
 
@@ -388,6 +459,22 @@ export function apply(ctx: Context, config: Config): void {
     runner,
   })
   ctx.llm.registerAdapter([resolved.provider], adapter)
+  if (resolved.claude.enabled) {
+    const claudeRuntime = new ClaudeCodeRuntime({
+      executable: resolved.claude.executable,
+      cwd: resolved.claude.cwd,
+      permissionMode: resolved.claude.permissionMode,
+      timeoutMs: resolved.claude.timeoutMs,
+      modelCacheMs: resolved.claude.modelCacheMs,
+      env: resolved.claude.env,
+    })
+    ctx.llm.registerAdapter([resolved.claude.provider], new ClaudeCodeAdapter({
+      provider: resolved.claude.provider,
+      displayName: resolved.claude.displayName,
+      maxRetries: resolved.claude.maxRetries,
+      runtime: claudeRuntime,
+    }))
+  }
   const search = new CodexWebSearchProvider({
     modelProvider: resolved.modelProvider,
     runner,

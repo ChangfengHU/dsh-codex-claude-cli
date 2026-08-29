@@ -2,9 +2,11 @@
 
 [English](README.md) | 中文
 
-`dsh-codex-claude-cli` 注册一个由本地登录的 Codex App Server 驱动的 DeepSeek Harness 主模型提供方。它是独立于 Harness 主仓库的组合包，因此安装时不会修改 `deepseek-harness` 仓库。
+`dsh-codex-claude-cli` 注册由本地登录的 Codex App Server 与 Claude Code 驱动的 DeepSeek Harness 主模型提供方。它是独立于 Harness 主仓库的组合包，因此安装时不会修改 `deepseek-harness` 仓库。
 
-它与 Harness 内置的 `@deepseek-ai/dsh-subagent-codex` 不同。内置包将 Codex 暴露为接受委派的子 agent；本包注册到 `ctx.llm`，因此 Harness Agent loop 可以选择 `codex-local` 作为模型提供方。
+它与 Harness 内置的 Codex/Claude 子 Agent 包不同。内置包提供委派子 Agent；本包注册到 `ctx.llm`，因此主 Harness Agent loop 可以选择 `codex-local` 和 `claude-local`。
+
+Claude 通道使用 Anthropic 官方 Agent SDK，直接指向主机上的 `claude` 可执行文件，并继续以原生 Claude 设置、账号登录、Skill、MCP 与插件为准。模型选择器来自当前登录账号实时返回的 `supportedModels()`；只有探测暂时失败时才显示稳定别名。插件不会读取或复制 Claude OAuth 数据。
 
 ## 截图
 
@@ -40,6 +42,7 @@ Harness 用户图片和含图片的工具结果在消息、重放与缓存身份
 
 ```sh
 codex login
+claude
 ```
 
 npm release 可用后，可安装不可变的已发布版本：
@@ -65,7 +68,7 @@ dsh --profile web --dump-config
 dsh --profile web
 ```
 
-该组合包注册 `codex-local` 提供方，以及固定版本 App Server 默认模型选择器中的所有模型：`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-mini` 和 `gpt-5.3-codex-spark`。请在 Models UI 中选择模型。安装不会自动替换 profile 的默认模型。标记为隐藏的 App Server 路由不会加入选择器。
+该组合包注册带固定 App Server 模型目录的 `codex-local`，以及读取现有 Claude Code 登录实时模型目录的 `claude-local`。请在 Models UI 中选择提供方和模型；安装不会自动替换 profile 默认模型。
 
 Harness profile 设置了 `autoInstallPeers: false`，因此安装时可能报告缺少 peer dependency。启动时，profile 的模块回退机制会从当前 Harness 安装中提供这些 peer，使插件共享相同的 Cordis 和服务实例。
 
@@ -108,6 +111,16 @@ dsh plugin --profile web remove dsh-codex-claude-cli
 | `webSearchModel` | 跟随主模型 | 插件拥有的搜索专用模型覆盖；留空时使用发起调用的 Codex 主模型。Codex 官方配置没有独立的 Web Search 模型键。 |
 | `webSearchMaxResults` | `8` | 合并条件接管的 Codex 原生搜索后所保留的 source 上限。 |
 | `env` | `{}` | 叠加到经 Harness 清理的父进程环境之上的显式子进程环境。`CODEX_HOME` 不在标准位置时，请通过此项传入。 |
+| `claudeEnabled` | `true` | 是否注册本机已登录的 Claude Code 提供方。 |
+| `claudeProvider` | `claude-local` | Claude Code 的 Harness 提供方路由。 |
+| `claudeDisplayName` | `Claude Code (local login)` | Claude 选择器名称。 |
+| `claudeExecutable` | `claude` | 主机 Claude Code 可执行文件或绝对路径。 |
+| `claudeCwd` | 进程工作目录 | Claude 原生工具可见的工作目录。 |
+| `claudePermissionMode` | `dontAsk` | Claude 原生权限策略，默认适合非交互运行。 |
+| `claudeTimeoutMs` | `300000` | 单次 Claude turn 的墙钟超时。 |
+| `claudeModelCacheMs` | `300000` | 实时模型目录成功探测后的缓存时间。 |
+| `claudeMaxRetries` | `0` | Claude 瞬时失败的 Harness 可见重试次数。 |
+| `claudeEnv` | `{}` | 叠加到主机环境上的 Claude 显式环境。 |
 
 覆盖配置示例：
 
@@ -142,6 +155,10 @@ dsh plugin --profile web remove dsh-codex-claude-cli
 ```
 
 ## 兼容性与限制
+
+- Claude Code 支持固定使用 Agent SDK `0.3.251`。身份验证、订阅权限、原生 Skill、MCP 配置与插件仍由主机 Claude 安装负责；本插件不会引入第二套登录流程。
+- Claude 目前在 DSH 中只声明文本输入。原生 Claude Code 工具可按配置的权限模式运行，但其内部动作卡片尚不会投影到 Codex 专用的 Harness 轨迹渲染器。
+- Claude 每次请求都从完整 Harness 会话记录重建，不保存另一份 Claude Session，避免双重会话状态。原生编码 Agent 路由无法忠实对应 `temperature`、`stop`、图片历史与普通 `maxTokens`，因此会明确拒绝这些覆盖项。
 
 - 协议基线为 Codex CLI `0.147.0`；由于实验性 App Server 协议对版本敏感，依赖和运行时握手均固定到该版本。
 - 默认目录展示每个模型的完整上下文窗口：GPT-5.4、GPT-5.5 和 GPT-5.6 系列为 `1050000`，`gpt-5.4-mini` 为 `400000`，`gpt-5.3-codex-spark` 为 `128000`。固定版本的 App Server 可能在用量通知中报告较小的有效工作窗口。部署环境若强制使用该较小限制，可以覆盖模型元数据；由提供方确认的上下文溢出仍可触发 Harness 压缩和重试。

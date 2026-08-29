@@ -2,9 +2,11 @@
 
 English | [中文](README.zh.md)
 
-`dsh-codex-claude-cli` registers a DeepSeek Harness main-model provider backed by the locally authenticated Codex App Server. It is an out-of-tree Harness bundle, so installing it does not modify the `deepseek-harness` repository.
+`dsh-codex-claude-cli` registers DeepSeek Harness main-model providers backed by the locally authenticated Codex App Server and Claude Code. It is an out-of-tree Harness bundle, so installing it does not modify the `deepseek-harness` repository.
 
-This differs from Harness's built-in `@deepseek-ai/dsh-subagent-codex`. The built-in package exposes Codex as a delegated child Agent. This package registers on `ctx.llm`, so `codex-local` is a selectable provider for the Harness Agent loop.
+This differs from Harness's built-in Codex and Claude subagent packages. Those expose delegated child Agents; this package registers on `ctx.llm`, so `codex-local` and `claude-local` are selectable providers for the main Harness Agent loop.
+
+Claude uses Anthropic's official Agent SDK, points it at the host `claude` executable, and leaves the native Claude settings, account login, Skills, MCP servers, and plugins authoritative. Its model selector is populated from the logged-in account's live `supportedModels()` response, with stable aliases only as an offline fallback. The plugin never reads or copies Claude OAuth data.
 
 ## Screenshot
 
@@ -40,6 +42,7 @@ Authenticate the native CLI once:
 
 ```sh
 codex login
+claude
 ```
 
 After a release is available from npm, install the immutable published version:
@@ -65,7 +68,7 @@ dsh --profile web --dump-config
 dsh --profile web
 ```
 
-The bundle registers provider `codex-local` and every model shown by the pinned App Server's default picker: `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.3-codex-spark`. Select one in the Models UI. Installation does not replace the profile's default model automatically. App Server routes marked as hidden are not added to the selector.
+The bundle registers `codex-local` with the pinned App Server catalog and `claude-local` with the live model catalog available to the existing Claude Code login. Select either provider and model in the Models UI. Installation does not replace the profile's default model automatically.
 
 Harness profiles set `autoInstallPeers: false`, so installation may report missing peer dependencies. At boot, the profile module fallback supplies those peers from the current Harness installation so the plugin shares its Cordis and service instances.
 
@@ -108,6 +111,16 @@ Later profile patch layers can replace the `llm-codex-app-server` row. A replace
 | `webSearchModel` | follow main model | Plugin-owned search-only model override. Blank uses the initiating Codex model; official Codex config exposes no separate Web Search model key. |
 | `webSearchMaxResults` | `8` | Source cap applied after conditional Codex-native searches are merged. |
 | `env` | `{}` | Explicit child environment layered over Harness's scrubbed parent environment. Use this to pass `CODEX_HOME` when it is nonstandard. |
+| `claudeEnabled` | `true` | Register the locally authenticated Claude Code provider. |
+| `claudeProvider` | `claude-local` | Harness provider route for Claude Code. |
+| `claudeDisplayName` | `Claude Code (local login)` | Claude selector label. |
+| `claudeExecutable` | `claude` | Host Claude Code executable or absolute path. |
+| `claudeCwd` | process working directory | Working directory exposed to native Claude tools. |
+| `claudePermissionMode` | `dontAsk` | Native Claude permission policy; non-interactive by default. |
+| `claudeTimeoutMs` | `300000` | Wall-clock limit for one Claude turn. |
+| `claudeModelCacheMs` | `300000` | Lifetime of a successful live model-catalog probe. |
+| `claudeMaxRetries` | `0` | Harness-visible retries for transient Claude failures. |
+| `claudeEnv` | `{}` | Explicit environment layered over the host environment for Claude. |
 
 Example override:
 
@@ -142,6 +155,10 @@ Example override:
 ```
 
 ## Compatibility and limitations
+
+- Claude Code support is pinned to Agent SDK `0.3.251`. Authentication, subscription access, native Skills, MCP configuration, and plugins remain owned by the host Claude installation; this plugin adds no second login flow.
+- Claude currently advertises text input only in DSH. Native Claude Code tools can run under the configured permission mode, but their internal action cards are not projected into Harness's Codex-specific trajectory renderer.
+- The Claude bridge reconstructs each request from the complete Harness transcript and does not persist a separate Claude session, avoiding split-brain conversation state. Temperature, stop, image history, and ordinary `maxTokens` overrides are rejected because the native coding-agent route does not provide faithful equivalents.
 
 - The protocol baseline is Codex CLI `0.147.0`; the dependency and runtime handshake are pinned because the experimental App Server protocol is version-sensitive.
 - The default catalog exposes each model's full context window: `1050000` for GPT-5.4, GPT-5.5, and the GPT-5.6 family; `400000` for `gpt-5.4-mini`; and `128000` for `gpt-5.3-codex-spark`. The pinned App Server may report a smaller effective working window in usage notifications. A deployment that enforces that smaller limit can override model metadata; a provider-confirmed context overflow remains eligible for Harness compaction and retry.
