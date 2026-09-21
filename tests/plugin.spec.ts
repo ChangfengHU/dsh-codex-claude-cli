@@ -41,6 +41,30 @@ async function context(): Promise<Context> {
 }
 
 describe('plugin composition', () => {
+  it('mounts independent providers and settings without touching the existing route', async () => {
+    const ctx=await context()
+    await ctx.plugin(MemorySettings)
+    const old = await ctx.plugin(CodexAppServer,{provider:'codex-studio-director',claudeEnabled:false})
+    // Separate module identity mirrors loading a new isolated bundle path.
+    const other={...CodexAppServer,apply:(scope:Context,config:CodexAppServer.Config)=>CodexAppServer.apply(scope,config)}
+    const ns='llm-codex-studio-director-stackfix' as SettingsNamespace
+    const fresh=await ctx.plugin(other,{provider:'codex-studio-director-stackfix',settingsNamespace:ns,claudeEnabled:false})
+    expect(ctx.llm.listProviders().map(p=>p.id)).toEqual(expect.arrayContaining(['codex-studio-director','codex-studio-director-stackfix']))
+    await ctx.settings.update(ns,{imageGenerationEnabled:false})
+    const sections=ctx.settings.describe()
+    expect(sections.find(s=>s.ns===ns)?.value.imageGenerationEnabled).toBe(false)
+    expect(sections.find(s=>s.ns===CodexAppServer.CODEX_SETTINGS_NAMESPACE)?.value.imageGenerationEnabled).toBe(true)
+    await fresh.dispose()
+    expect(ctx.llm.listProviders().map(p=>p.id)).toContain('codex-studio-director')
+    expect(ctx.llm.listProviders().map(p=>p.id)).not.toContain('codex-studio-director-stackfix')
+    expect(old).toBeDefined()
+  })
+
+  it('rejects unsafe explicit settings namespace', async () => {
+    const ctx=await context()
+    await expect(ctx.plugin(CodexAppServer,{settingsNamespace:'../other',claudeEnabled:false})).rejects.toThrow(/settingsNamespace/)
+  })
+
   it('materializes the default model catalog through Cordis config parsing', async () => {
     const ctx = await context()
     await ctx.plugin(CodexAppServer, {})

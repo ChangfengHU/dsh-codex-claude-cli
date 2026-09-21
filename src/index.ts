@@ -6,7 +6,7 @@ import type {} from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-tools'
 import type { WebSearchResult, WebSearchSource } from '@deepseek-ai/dsh-web'
 import type { ModelModality } from '@deepseek-ai/dsh-llm'
-import { installSettingsSection } from '@deepseek-ai/dsh-settings'
+import { installSettingsSection, settingsNamespace as makeSettingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
 import { CodexAppServerAdapter } from './adapter.ts'
 import type { CodexModel } from './adapter.ts'
@@ -80,6 +80,8 @@ export const inject = ['llm', 'subprocess', 'tools']
 /** Plugin configuration for one static provider route. */
 export interface Config extends CodexCapabilitySettings {
   provider?: string
+  /** Isolate capability settings when mounting multiple provider instances. */
+  settingsNamespace?: string
   displayName?: string
   modelProvider?: string
   models?: Array<{
@@ -197,6 +199,7 @@ const CLAUDE_PERMISSION_MODES = ['default', 'acceptEdits', 'bypassPermissions', 
 
 export const Config: z<Config> = z.object({
   provider: z.string().default('codex-local'),
+  settingsNamespace: z.string().default(String(CODEX_SETTINGS_NAMESPACE)),
   displayName: z.string().default('Codex (local login)'),
   modelProvider: z.string().default('openai'),
   models: z.array(modelSchema).default(DEFAULT_MODELS),
@@ -224,6 +227,7 @@ export const Config: z<Config> = z.object({
 
 interface ResolvedConfig {
   readonly provider: string
+  readonly settingsNamespace: string
   readonly displayName: string
   readonly modelProvider: string
   readonly models: readonly CodexModel[]
@@ -255,6 +259,8 @@ const SAFE_ROUTE = /^[a-z0-9][a-z0-9._-]{0,79}$/u
 
 function resolveConfig(config: Config): ResolvedConfig {
   const provider = config.provider ?? 'codex-local'
+  const settingsNamespace = config.settingsNamespace ?? String(CODEX_SETTINGS_NAMESPACE)
+  if (!SAFE_ROUTE.test(settingsNamespace)) throw new Error('llm-codex-app-server: settingsNamespace is not a safe namespace id')
   const displayName = config.displayName ?? 'Codex (local login)'
   const modelProvider = config.modelProvider ?? 'openai'
   const timeoutMs = config.timeoutMs ?? 300_000
@@ -356,6 +362,7 @@ function resolveConfig(config: Config): ResolvedConfig {
   })
   return {
     provider,
+    settingsNamespace,
     displayName,
     modelProvider,
     models,
@@ -505,7 +512,7 @@ export function apply(ctx: Context, config: Config): void {
   })
   installSettingsSection(
     ctx,
-    CODEX_SETTINGS_NAMESPACE,
+    makeSettingsNamespace(resolved.settingsNamespace),
     CodexCapabilitySettingsSchema,
     resolved.capabilities,
     {
