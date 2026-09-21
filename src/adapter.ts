@@ -36,6 +36,18 @@ import type {
 import { CodexSessionCache } from './session-cache.ts'
 import type { CodexSessionStep } from './session-cache.ts'
 
+/** Preserve code locations only: never serialize request data or the original error body. */
+export function stackOverflowDiagnostic(error: unknown): string | undefined {
+  if (!(error instanceof RangeError) || error.message !== 'Maximum call stack size exceeded') return undefined
+  const frames: string[] = []
+  for (const line of (error.stack ?? '').split('\n').slice(1, 20)) {
+    const match = /(?:^|[/\\])([A-Za-z0-9_.-]+\.(?:[cm]?js|tsx?)):(\d+):(\d+)\)?$/.exec(line.trim())
+    if (match) frames.push(`${match[1]}:${match[2]}:${match[3]}`)
+    if (frames.length === 8) break
+  }
+  return `Codex adapter stack overflow; safe code locations: ${frames.length ? frames.join(', ') : 'unavailable'}`
+}
+
 /** One model exposed in the Harness selector. */
 export interface CodexModel {
   readonly id: string
@@ -144,6 +156,16 @@ export class CodexAppServerAdapter extends LlmAdapter {
   }
 
   override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    try {
+      yield * this.streamRequest(options)
+    } catch (error) {
+      const diagnostic = stackOverflowDiagnostic(error)
+      if (diagnostic !== undefined) throw new LlmError(diagnostic, 'ADAPTER_STACK_OVERFLOW')
+      throw error
+    }
+  }
+
+  private async * streamRequest(options: GenerateOptions): AsyncIterable<StreamChunk> {
     const compaction = options.purpose === 'compaction'
     // Compaction is a closed text generation. Even when ordinary turns expose
     // image generation, a summarizer must not be able to start unrelated work.

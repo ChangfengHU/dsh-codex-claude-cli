@@ -76,6 +76,24 @@ function rawImageOutput(type = 'function_call_output'): CodexAppServerEvent {
 }
 
 describe('NativeImageBridge', () => {
+  it('validates large base64 iteratively after repeated small-image warmup', async () => {
+    const store = imageStore()
+    const generous = {...store,imageLimits:{...store.imageLimits,maxImageBytes:20*1024*1024}}
+    const bridge = new NativeImageBridge(() => generous)
+    for (let i=0;i<20;i++) await bridge.externalize(imageCompleted())
+    for (const bytes of [1_648_840,2_160_987,8*1024*1024]) {
+      const encoded = Buffer.alloc(bytes,113).toString('base64')
+      await expect(bridge.externalize(imageCompleted(encoded))).resolves.toHaveProperty('event')
+    }
+    expect(store.saveImage).toHaveBeenCalledTimes(4)
+  })
+
+  it.each(['A===','AA=A','AAAA====','AAAA=AAA','AAAA\nAAA','AAAA AAA','AB==','AAB=','AＡAA'])('rejects malformed alphabet or noncanonical padding %s', async (encoded) => {
+    const store=imageStore(),bridge=new NativeImageBridge(()=>store)
+    await expect(bridge.externalize(imageCompleted(encoded))).rejects.toMatchObject({code:'MALFORMED_RESPONSE'})
+    expect(store.saveImage).not.toHaveBeenCalled()
+  })
+
   it.each(['function_call_output', 'custom_tool_call_output'])('externalizes %s images once and rehydrates cold replay', async (type) => {
     const store = imageStore()
     const bridge = new NativeImageBridge(() => store)

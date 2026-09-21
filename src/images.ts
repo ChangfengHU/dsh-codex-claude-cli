@@ -26,7 +26,20 @@ const IMAGE_MEDIA_TYPES = new Set<ImageMediaType>([
   'image/gif',
 ])
 const IMAGE_DETAILS = new Set(['auto', 'low', 'high', 'original'])
-const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u
+/** Iterative validation avoids V8 regexp stack growth on large image payloads. */
+function hasBase64AlphabetAndPadding(value: string): boolean {
+  if (value.length === 0 || value.length % 4 !== 0) return false
+  let end = value.length
+  if (value.charCodeAt(end - 1) === 61) end -= 1
+  if (value.charCodeAt(end - 1) === 61) end -= 1
+  for (let i = 0; i < end; i += 1) {
+    const code = value.charCodeAt(i)
+    if (!((code >= 65 && code <= 90) || (code >= 97 && code <= 122)
+      || (code >= 48 && code <= 57) || code === 43 || code === 47)) return false
+  }
+  // The round-trip check after decoding also enforces zero unused padding bits.
+  return true
+}
 
 interface JsonObject {
   readonly [key: string]: unknown
@@ -143,7 +156,7 @@ function decodedBase64(
   if (encoded.length === 0
     || encoded.length > maximumEncodedBytes
     || encoded.length % 4 !== 0
-    || !BASE64.test(encoded)) {
+    || !hasBase64AlphabetAndPadding(encoded)) {
     throw new LlmError(`Codex App Server returned invalid ${label}`, 'MALFORMED_RESPONSE')
   }
   const data = Buffer.from(encoded, 'base64')

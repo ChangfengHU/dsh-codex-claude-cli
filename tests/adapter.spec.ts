@@ -3,7 +3,7 @@ import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { CallId, MessageId, OFFLOADED_IMAGE_TEXT, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, Message, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { CodexAppServerAdapter } from '../src/adapter.ts'
+import { CodexAppServerAdapter, stackOverflowDiagnostic } from '../src/adapter.ts'
 import type { CodexImageStorePort } from '../src/images.ts'
 import type {
   CodexAppServerEvent,
@@ -1165,5 +1165,31 @@ describe('CodexAppServerAdapter', () => {
   it('maps an actual failed Codex turn', async () => {
     const { adapter: instance } = adapter([turnCompleted('failed')])
     await expect(collect(instance, request())).rejects.toMatchObject({ code: 'RATE_LIMIT' })
+  })
+})
+
+
+describe('safe stack overflow diagnostics', () => {
+  it('surfaces a non-retryable diagnostic from the outer stream boundary', async () => {
+    const failure = new RangeError('Maximum call stack size exceeded')
+    failure.stack = 'RangeError: PRIVATE BODY\n    at parse (/private/images.ts:149:12)'
+    const fixture=adapter([])
+    fixture.stream.mockImplementation(() => {throw failure})
+    await expect(collect(fixture.adapter,request())).rejects.toMatchObject({code:'ADAPTER_STACK_OVERFLOW',message:'Codex adapter stack overflow; safe code locations: images.ts:149:12'})
+    expect(fixture.adapter.providerRetryPolicy('codex-local').retryableCodes).not.toContain('ADAPTER_STACK_OVERFLOW')
+  })
+
+  it('retains bounded code locations but excludes error text, URLs and frame arguments', () => {
+    const error=new RangeError('Maximum call stack size exceeded')
+    error.stack='RangeError: PRIVATE BODY\n    at decode (file:///private/index-v155-images.js:149:12)\n    at https://user:SECRET@example.com/api?token=SECRET\n    at handler(SECRET PAYLOAD)\n    at execute (/private/adapter.ts:188:2)'
+    const result=stackOverflowDiagnostic(error)
+    expect(result).toContain('index-v155-images.js:149:12')
+    expect(result).toContain('adapter.ts:188:2')
+    expect(result).not.toMatch(/SECRET|PRIVATE|PAYLOAD|user:|private/)
+  })
+  it('does not relabel or retry arbitrary provider errors', () => {
+    expect(stackOverflowDiagnostic(new Error('Maximum call stack size exceeded'))).toBeUndefined()
+    expect(stackOverflowDiagnostic(new RangeError('private provider failure'))).toBeUndefined()
+    expect(stackOverflowDiagnostic({message:'Maximum call stack size exceeded'})).toBeUndefined()
   })
 })
