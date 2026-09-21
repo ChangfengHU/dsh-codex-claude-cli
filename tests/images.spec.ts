@@ -55,7 +55,7 @@ function imageCompleted(result = PNG_BASE64): CodexAppServerEvent {
   }
 }
 
-function rawImageOutput(): CodexAppServerEvent {
+function rawImageOutput(type = 'function_call_output'): CodexAppServerEvent {
   return {
     kind: 'notification',
     method: 'rawResponseItem/completed',
@@ -63,7 +63,7 @@ function rawImageOutput(): CodexAppServerEvent {
       threadId: 'thread-1',
       turnId: 'turn-1',
       item: {
-        type: 'function_call_output',
+        type,
         id: 'output-1',
         call_id: 'call-1',
         output: [
@@ -76,7 +76,7 @@ function rawImageOutput(): CodexAppServerEvent {
 }
 
 describe('NativeImageBridge', () => {
-  it('externalizes duplicate native payloads once and rehydrates replay from the attachment', async () => {
+  it.each(['function_call_output', 'custom_tool_call_output'])('externalizes %s images once and rehydrates cold replay', async (type) => {
     const store = imageStore()
     const bridge = new NativeImageBridge(() => store)
 
@@ -95,7 +95,7 @@ describe('NativeImageBridge', () => {
       },
     })
 
-    const raw = await bridge.externalize(rawImageOutput())
+    const raw = await bridge.externalize(rawImageOutput(type))
     expect(raw.images).toEqual([])
     expect(JSON.stringify(raw.event)).not.toContain(PNG_BASE64)
     expect(store.saveImage).toHaveBeenCalledOnce()
@@ -114,7 +114,7 @@ describe('NativeImageBridge', () => {
 
     const resumed = new NativeImageBridge(() => store)
     await resumed.hydrateHistory([durable])
-    const echoed = await resumed.externalize(rawImageOutput())
+    const echoed = await resumed.externalize(rawImageOutput(type))
     expect(echoed.images).toEqual([])
     expect(store.saveImage).toHaveBeenCalledOnce()
   })
@@ -126,10 +126,10 @@ describe('NativeImageBridge', () => {
     expect(store.saveImage).not.toHaveBeenCalled()
   })
 
-  it('validates and publishes an image that appears only in a raw tool output', async () => {
+  it.each(['function_call_output', 'custom_tool_call_output'])('validates and publishes an image appearing only in %s', async (type) => {
     const store = imageStore()
     const bridge = new NativeImageBridge(() => store)
-    const raw = await bridge.externalize(rawImageOutput())
+    const raw = await bridge.externalize(rawImageOutput(type))
     expect(raw.images).toEqual([IMAGE_REF])
     expect(store.validateImage).toHaveBeenCalledOnce()
     expect(store.saveImage).toHaveBeenCalledOnce()
@@ -233,6 +233,53 @@ describe('NativeImageBridge', () => {
     expect(store.readImage).toHaveBeenNthCalledWith(1, refs[1], undefined)
     expect(store.readImage).toHaveBeenNthCalledWith(2, refs[2], undefined)
     expect(store.readImage).not.toHaveBeenCalledWith(refs[0], expect.anything())
+  })
+
+
+  it('bounds mixed custom, function, legacy inline and user images without changing text or call IDs', async () => {
+    const marker = imageAttachmentMarker({ ...IMAGE_REF, bytes: 3 })
+    const history: JsonValue[] = [
+      { type: 'custom_tool_call_output', call_id: 'native-old', output: [
+        { type: 'input_text', text: 'keep caption' },
+        { type: 'input_image', image_url: `data:image/png;base64,${PNG_BASE64}` },
+      ] },
+      { type: 'function_call_output', call_id: 'function-old', output: [
+        { type: 'input_image', image_url: marker },
+      ] },
+      { type: 'custom_tool_call_output', call_id: 'native-new', output: [
+        { type: 'input_image', image_url: marker },
+      ] },
+      { type: 'message', role: 'user', content: [
+        { type: 'input_image', image_url: marker },
+      ] },
+      { type: 'custom_tool_call_output', call_id: 'text', output: 'plain result' },
+    ]
+    const bounded = boundRequestImageHistory(history, 8)
+    expect(bounded).toEqual([
+      { type: 'custom_tool_call_output', call_id: 'native-old', output: [
+        { type: 'input_text', text: 'keep caption' },
+        { type: 'input_text', text: OFFLOADED_IMAGE_TEXT },
+      ] },
+      { type: 'function_call_output', call_id: 'function-old', output: [
+        { type: 'input_text', text: OFFLOADED_IMAGE_TEXT },
+      ] },
+      history[2], history[3], history[4],
+    ])
+    expect(JSON.stringify(history)).toContain(PNG_BASE64)
+    const store = imageStore()
+    await new NativeImageBridge(() => store).hydrateHistory(bounded)
+    expect(store.readImage).toHaveBeenCalledOnce()
+  })
+
+  it('remembers custom output attachments without re-publishing on the next request', async () => {
+    const bridge = new NativeImageBridge(() => imageStore())
+    bridge.rememberHistory([{
+      type: 'custom_tool_call_output', call_id: 'native-old',
+      output: [{ type: 'input_image', image_url: imageAttachmentMarker(IMAGE_REF) }],
+    }])
+    const echo = await bridge.externalize(rawImageOutput('custom_tool_call_output'))
+    expect(echo.images).toEqual([])
+    expect(JSON.stringify(echo.event)).not.toContain(PNG_BASE64)
   })
 
   it('externalizes a supplied Harness tool image echo without publishing it', async () => {

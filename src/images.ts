@@ -190,18 +190,26 @@ function markerLength(value: unknown, label: string): number {
   return base64Length(markerReference(value, label).bytes, `${label}.attachment.bytes`)
 }
 
+/** Count durable markers and legacy inline data URLs; leave remote URLs untouched. */
+function modelImageLength(value: JsonValue, label: string): number | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)
+    || value.type !== 'input_image') return undefined
+  if (typeof value.image_url !== 'string') return markerLength(value.image_url, label)
+  const prefix = /^data:image\/(?:png|jpeg|webp|gif);base64,/u.exec(value.image_url)
+  return prefix === null ? undefined : value.image_url.length - prefix[0].length
+}
+
 function collectModelImageLengths(item: JsonValue, label: string, lengths: number[]): void {
   if (item === null || typeof item !== 'object' || Array.isArray(item)) return
   const values = item.type === 'message' && Array.isArray(item.content)
     ? item.content
-    : item.type === 'function_call_output' && Array.isArray(item.output)
+    : (item.type === 'function_call_output' || item.type === 'custom_tool_call_output') && Array.isArray(item.output)
       ? item.output
       : undefined
   if (values === undefined) return
   for (const [index, value] of values.entries()) {
-    if (value === null || typeof value !== 'object' || Array.isArray(value)
-      || value.type !== 'input_image' || typeof value.image_url === 'string') continue
-    lengths.push(markerLength(value.image_url, `${label}[${index}].image_url`))
+    const length = modelImageLength(value, `${label}[${index}].image_url`)
+    if (length !== undefined) lengths.push(length)
   }
 }
 
@@ -212,7 +220,7 @@ function replaceOldestModelImages(
   if (item === null || typeof item !== 'object' || Array.isArray(item)) return item
   const field = item.type === 'message' && Array.isArray(item.content)
     ? 'content'
-    : item.type === 'function_call_output' && Array.isArray(item.output)
+    : (item.type === 'function_call_output' || item.type === 'custom_tool_call_output') && Array.isArray(item.output)
       ? 'output'
       : undefined
   if (field === undefined) return item
@@ -220,11 +228,7 @@ function replaceOldestModelImages(
   let next: JsonValue[] | undefined
   for (const [index, value] of values.entries()) {
     const replace = remaining.count > 0
-      && value !== null
-      && typeof value === 'object'
-      && !Array.isArray(value)
-      && value.type === 'input_image'
-      && typeof value.image_url !== 'string'
+      && modelImageLength(value, `${field}[${index}].image_url`) !== undefined
     if (replace) {
       remaining.count -= 1
       next ??= values.slice(0, index)
@@ -237,7 +241,7 @@ function replaceOldestModelImages(
 }
 
 /**
- * Bound only marker fields that will be hydrated into model-visible image input.
+ * Bound model-visible image markers and legacy inline data URLs before replay.
  * Provider trajectory markers such as imageGeneration.result are never counted.
  */
 export function boundRequestImageHistory(
@@ -297,7 +301,7 @@ export class NativeImageBridge {
       if (item === null || typeof item !== 'object' || Array.isArray(item)) continue
       if (item.type === 'message' && Array.isArray(item.content)) {
         this.rememberContentMarkers(item.content, `history[${itemIndex}].content`, 'supplied')
-      } else if (item.type === 'function_call_output' && Array.isArray(item.output)) {
+      } else if ((item.type === 'function_call_output' || item.type === 'custom_tool_call_output') && Array.isArray(item.output)) {
         const origin = typeof item.call_id === 'string' && this.harnessCallIds.has(item.call_id)
           ? 'supplied'
           : 'published'
@@ -443,7 +447,7 @@ export class NativeImageBridge {
     event: Extract<CodexAppServerEvent, { readonly kind: 'notification' }>,
   ): Promise<ExternalizedCodexEvent> {
     const current = object(event.params.item, 'Codex raw response item', 'MALFORMED_RESPONSE')
-    if (current.type === 'function_call_output' && Array.isArray(current.output)) {
+    if ((current.type === 'function_call_output' || current.type === 'custom_tool_call_output') && Array.isArray(current.output)) {
       const supplied = typeof current.call_id === 'string' && this.harnessCallIds.has(current.call_id)
       return this.externalizeRawContent(event, current, 'output', supplied)
     }
@@ -511,7 +515,7 @@ export class NativeImageBridge {
       const content = await this.hydrateRawContent(item.content, `${label}.content`, supplied, signal)
       return content === item.content ? item : { ...item, content }
     }
-    if (item.type === 'function_call_output' && Array.isArray(item.output)) {
+    if ((item.type === 'function_call_output' || item.type === 'custom_tool_call_output') && Array.isArray(item.output)) {
       const supplied = typeof item.call_id === 'string' && this.harnessCallIds.has(item.call_id)
       const output = await this.hydrateRawContent(item.output, `${label}.output`, supplied, signal)
       return output === item.output ? item : { ...item, output }
