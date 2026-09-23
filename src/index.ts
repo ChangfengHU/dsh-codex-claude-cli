@@ -79,6 +79,8 @@ export const inject = ['llm', 'subprocess', 'tools']
 
 /** Plugin configuration for one static provider route. */
 export interface Config extends CodexCapabilitySettings {
+  /** Host-owned override for the pinned CLI's model catalog. Empty uses normal Codex configuration. */
+  modelCatalogPath?: string
   provider?: string
   displayName?: string
   modelProvider?: string
@@ -210,6 +212,7 @@ export const Config: z<Config> = z.object({
   sessionIdleTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(600_000),
   ...codexCapabilitySettingsFields,
   env: z.dict(z.string()).default({}),
+  modelCatalogPath: z.string().default(''),
   claudeEnabled: z.boolean().default(true),
   claudeProvider: z.string().default('claude-local'),
   claudeDisplayName: z.string().default('Claude Code (local login)'),
@@ -439,6 +442,7 @@ export function apply(ctx: Context, config: Config): void {
     maxJsonRpcLineBytes: resolved.maxJsonRpcLineBytes,
     maxStderrBytes: resolved.maxStderrBytes,
     env: resolved.env,
+    ...(config.modelCatalogPath ? { modelCatalogPath: config.modelCatalogPath } : {}),
     spawn: spec => ctx.subprocess.spawn(spec),
   })
   const reportCleanupError = (error: unknown): void => {

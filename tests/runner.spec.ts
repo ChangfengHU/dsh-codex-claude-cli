@@ -151,6 +151,14 @@ async function collectTurn(
 }
 
 describe('Codex App Server runner', () => {
+  it('overrides only the process catalog and diagnoses incompatible catalog after EOF', async () => {
+    expect(codexAppServerArgv('disabled', true, '/host/catalog.json')).toContain('model_catalog_json="/host/catalog.json"')
+    const child = scriptedHandle(() => { queueMicrotask(() => { child.stdout?.push(null) }) })
+    const broken = { ...child, collected: { stderr: { readFrom: () => ({ text:'Error: failed to parse model_catalog_json: missing field `supports_parallel_tool_calls`', nextOffset:0, lossy:false }) } } }
+    const instance = runner(() => {}, { spawn: () => broken }).runner
+    await expect(collect(instance, request())).rejects.toMatchObject({code:'PROTOCOL_VERSION'})
+  })
+
   it('uses the pinned CLI entry and fixed non-shell policy', () => {
     expect(existsSync(codexCliEntry())).toBe(true)
     const argv = codexAppServerArgv()

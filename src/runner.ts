@@ -124,6 +124,8 @@ export interface CodexAppServerRunnerOptions {
   readonly maxJsonRpcLineBytes: number
   readonly maxStderrBytes: number
   readonly env: Readonly<Record<string, string>>
+  /** Optional host-owned catalog compatible with the pinned CLI; never changes global Codex config. */
+  readonly modelCatalogPath?: string
   readonly spawn: (spec: SubprocessSpawnSpec) => SubprocessHandle
 }
 
@@ -143,6 +145,7 @@ export function codexCliEntry(): string {
 export function codexAppServerArgv(
   webSearch: CodexWebSearchMode = 'disabled',
   imageGenerationEnabled = true,
+  modelCatalogPath?: string,
 ): string[] {
   const enabledFeatures = [
     ...CODEX_ALWAYS_ENABLED_FEATURES,
@@ -169,6 +172,7 @@ export function codexAppServerArgv(
     `web_search="${webSearch}"`,
     '-c',
     `model_auto_compact_token_limit=${String(HARNESS_COMPACTION_THRESHOLD)}`,
+    ...(modelCatalogPath ? ['-c', `model_catalog_json=${JSON.stringify(modelCatalogPath)}`] : []),
     ...enabled,
     ...disabled,
   ]
@@ -318,7 +322,7 @@ export class CodexAppServerRunner implements CodexAppServerRunnerPort {
     try {
       if (request.signal?.aborted) throw request.signal.reason
       child = this.options.spawn({
-        argv: codexAppServerArgv(request.webSearch, request.imageGenerationEnabled),
+        argv: codexAppServerArgv(request.webSearch, request.imageGenerationEnabled, this.options.modelCatalogPath),
         cwd: workdir,
         stdio: {
           stdin: 'pipe',
@@ -418,6 +422,14 @@ export class CodexAppServerRunner implements CodexAppServerRunnerPort {
       })
     } catch (error: unknown) {
       let failure = operationFailure(error, timedOut, request.signal)
+      // stdout EOF can win the race with child.done. Preserve a safe diagnosis
+      // without exposing arbitrary stderr (which may contain credentials).
+      if (!timedOut && !request.signal?.aborted && child && error instanceof Error && error.message === 'Codex App Server closed its protocol stream') {
+        await child.waitForExit(AbortSignal.timeout(Math.min(this.options.disposeGraceMs, 1000))).catch(() => false)
+        if (/model_catalog_json[\s\S]*missing field/u.test(readStderr(child))) {
+          failure = new LlmError('Codex model catalog is incompatible with the pinned CLI (missing required field)', 'PROTOCOL_VERSION')
+        }
+      }
       if (!lifetime.signal.aborted) lifetime.abort(CONSUMER_REASON)
       failure = cleanupError(
         failure,
