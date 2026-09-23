@@ -34,6 +34,7 @@
     "docs/architecture.md",
     "docs/releasing.md",
     "docs/releasing.zh.md",
+    "scripts/prepare-model-catalog.mjs",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",

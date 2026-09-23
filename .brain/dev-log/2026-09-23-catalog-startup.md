@@ -14,3 +14,15 @@ Verification: runner/plugin tests passed; TypeScript passed after exact-optional
 property correction. Runtime model response and Fleet Task acceptance are separate
 pending checks; successful handshake is not successful machine onboarding.
 Unrelated client workbench edits are excluded from this commit/deployment.
+
+137 tests and typecheck pass. `scripts/verify-model-startup.ts` runs the actual
+pinned CLI with the compatible catalog, no dynamic tools, and obtains MODEL_OK.
+Production Task fallback separately issued genuine Qwen tool calls (see Task
+Console dev-log). The profile name field is an identity guard, not a module-path
+replacement: the first patch was skipped. Corrected to the original package name
+and staged the host-only bundle in the installed package, with a rollback copy in
+`dsh-studio-migration/codex-startup-0289358/previous-index.js`.
+The composed config now includes the owned catalog. Host reload is pending a safe
+zero-active window because a separate Studio workflow is running. Do not restart
+over it. Global Codex config/catalog, credentials and concurrent client workbench
+remain unchanged. The catalog preparation script is included in future packages.
