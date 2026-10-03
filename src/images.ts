@@ -26,7 +26,10 @@ const IMAGE_MEDIA_TYPES = new Set<ImageMediaType>([
   'image/gif',
 ])
 const IMAGE_DETAILS = new Set(['auto', 'low', 'high', 'original'])
-const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u
+// Repeating four-character groups can overflow V8's regexp stack on valid
+// multi-megabyte images. Length and canonical padding are checked by the
+// decoder/round-trip below; this flat check only validates alphabet/padding.
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/u
 
 interface JsonObject {
   readonly [key: string]: unknown

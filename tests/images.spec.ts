@@ -126,6 +126,24 @@ describe('NativeImageBridge', () => {
     expect(store.saveImage).not.toHaveBeenCalled()
   })
 
+  it('accepts an in-limit multi-megabyte canonical payload without regexp stack overflow', async () => {
+    const store = imageStore()
+    const bridge = new NativeImageBridge(() => store)
+    // Attachment service is mocked: this tests base64 decoding, not PNG validity.
+    const bytes = Buffer.alloc(4 * 1024 * 1024, 0x6a)
+    await expect(bridge.externalize(imageCompleted(bytes.toString('base64')))).resolves.toBeDefined()
+    expect(store.saveImage).toHaveBeenCalledOnce()
+    const input = vi.mocked(store.saveImage).mock.calls[0]![0]
+    expect(Buffer.from(input.data)).toEqual(bytes)
+  })
+
+  it.each(['A===', 'AA=A', 'AAAA\n', '!!!!', 'AB=='])('rejects non-canonical payload %j', async value => {
+    const store = imageStore()
+    const bridge = new NativeImageBridge(() => store)
+    await expect(bridge.externalize(imageCompleted(value))).rejects.toMatchObject({ code: 'MALFORMED_RESPONSE' })
+    expect(store.saveImage).not.toHaveBeenCalled()
+  })
+
   it('validates and publishes an image that appears only in a raw tool output', async () => {
     const store = imageStore()
     const bridge = new NativeImageBridge(() => store)
