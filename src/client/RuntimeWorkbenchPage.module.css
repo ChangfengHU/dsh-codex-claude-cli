@@ -1,0 +1,91 @@
+.page {
+  box-sizing: border-box;
+  width: min(1120px, 100%);
+  margin: 0 auto;
+  color: var(--dsw-alias-label-primary);
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+.headCopy {
+  min-width: 0;
+  flex: 1;
+}
+
+.title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.4;
+}
+
+.description {
+  margin: 5px 0 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.runtimeGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.runtimeCard {
+  padding: 17px 18px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 13px;
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+.runtimeTop {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.runtimeName {
+  min-width: 0;
+  flex: 1;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.status {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(30, 160, 100, .12);
+  color: #168153;
+  font-size: 11px;
+}
+
+.runtimeMeta {
+  margin: 9px 0 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.sectionTitle {
+  margin: 22px 0 9px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.settingsList {
+  margin: 0;
+  padding: 0;
+}
+
+@media (max-width: 720px) {
+  .runtimeGrid { grid-template-columns: minmax(0, 1fr); }
+}

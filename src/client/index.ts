@@ -7,6 +7,7 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { CodexAssistantNodeView } from './CodexAssistantNodeView.tsx'
 import { CodexSettingsCard } from './CodexSettingsCard.tsx'
+import { RuntimeWorkbenchPage } from './RuntimeWorkbenchPage.tsx'
 import { en, NS, zh } from './locales.ts'
 import {
   CODEX_SETTINGS_NAMESPACE,
@@ -34,4 +35,13 @@ export function apply(ctx: Context): void {
     locale: NS,
     inject: () => settings.inject(),
   }, CodexSettingsCard))
+  const slots = ctx.slots as any
+  slots.inject('workbench.page', () => slots.register({
+    name: 'workbench.page',
+    id: 'cli-runtimes',
+    order: 30,
+    label: 'CLI Runtimes',
+    locale: NS,
+    inject: () => settings.inject(),
+  }, RuntimeWorkbenchPage))
 }
