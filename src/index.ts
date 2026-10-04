@@ -12,9 +12,16 @@ import { CodexAppServerAdapter } from './adapter.ts'
 import type { CodexModel } from './adapter.ts'
 import { ClaudeCodeAdapter } from './claude-adapter.ts'
 import { ClaudeCodeRuntime } from './claude-runtime.ts'
+import { CLAUDE_SETTINGS_NAMESPACE, ClaudeRuntimeSettingsSchema, validateClaudeSettings } from './claude-settings.ts'
+import type { ClaudeRuntimeSettings } from './claude-settings.ts'
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 import { SAFE_MODEL_ID, SAFE_REASONING_EFFORT } from './identifiers.ts'
 import { CodexAppServerRunner } from './runner.ts'
+import { CodexModelCatalog } from './model-catalog.ts'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import {
   CODEX_SETTINGS_NAMESPACE,
   codexCapabilitySettingsFields,
@@ -81,6 +88,10 @@ export const inject = ['llm', 'subprocess', 'tools']
 export interface Config extends CodexCapabilitySettings {
   /** Host-owned override for the pinned CLI's model catalog. Empty uses normal Codex configuration. */
   modelCatalogPath?: string
+  /** Follow the locally authenticated Codex catalog instead of the offline fallback. */
+  autoModels?: boolean
+  /** Host-owned native Codex executable; blank uses the bundled CLI. */
+  executable?: string
   provider?: string
   displayName?: string
   modelProvider?: string
@@ -213,6 +224,8 @@ export const Config: z<Config> = z.object({
   ...codexCapabilitySettingsFields,
   env: z.dict(z.string()).default({}),
   modelCatalogPath: z.string().default(''),
+  autoModels: z.boolean().default(true),
+  executable: z.string().default(''),
   claudeEnabled: z.boolean().default(true),
   claudeProvider: z.string().default('claude-local'),
   claudeDisplayName: z.string().default('Claude Code (local login)'),
@@ -432,10 +445,21 @@ async function runCodexSearches(
 }
 
 /** Register the configured Codex App Server route on `ctx.llm`. */
-export function apply(ctx: Context, config: Config): void {
+export async function apply(ctx: Context, config: Config): Promise<void> {
   const resolved = resolveConfig(config)
+  const executable = config.executable?.trim() || undefined
+  let nativeVersion: string | undefined
+  if (executable) {
+    const result = await promisify(execFile)(executable, ['--version'], { timeout: 5000, maxBuffer: 8192 })
+    nativeVersion = result.stdout.match(/codex-cli\s+(\d+\.\d+\.\d+(?:[-.][\w.]+)?)/)?.[1]
+    if (!nativeVersion) throw new Error('Codex executable did not report a valid version')
+  }
   let capabilitySource: () => CodexCapabilitySettings = () => resolved.capabilities
   const capabilities = (): ResolvedCodexCapabilitySettings => resolveCodexCapabilitySettings(capabilitySource())
+  const catalog = config.autoModels !== false ? new CodexModelCatalog(
+    config.modelCatalogPath || join(resolved.env.CODEX_HOME || process.env.CODEX_HOME || join(homedir(), '.codex'), 'models_cache.json'),
+    resolved.models,
+  ) : undefined
   const runner = new CodexAppServerRunner({
     timeoutMs: resolved.timeoutMs,
     disposeGraceMs: resolved.disposeGraceMs,
@@ -443,6 +467,12 @@ export function apply(ctx: Context, config: Config): void {
     maxStderrBytes: resolved.maxStderrBytes,
     env: resolved.env,
     ...(config.modelCatalogPath ? { modelCatalogPath: config.modelCatalogPath } : {}),
+    ...(executable ? { executable, expectedVersion: nativeVersion! } : {}),
+    ...(catalog ? { resolveModelCatalogPath: async () => (await catalog.snapshot()).path } : {}),
+    resolveEnv: () => {
+      const proxy = capabilities().networkProxy
+      return proxy ? { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, ALL_PROXY: proxy } : {}
+    },
     spawn: spec => ctx.subprocess.spawn(spec),
   })
   const reportCleanupError = (error: unknown): void => {
@@ -453,6 +483,9 @@ export function apply(ctx: Context, config: Config): void {
     displayName: resolved.displayName,
     modelProvider: resolved.modelProvider,
     models: resolved.models,
+    ...(catalog ? { resolveModels: async () => (await catalog.snapshot()).models } : {}),
+    resolveNetworkProxy: () => capabilities().networkProxy,
+    ...(nativeVersion ? { appServerVersion: nativeVersion } : {}),
     maxRetries: resolved.maxRetries,
     maxRequestImageBytes: resolved.maxRequestImageBytes,
     maxCachedSessions: resolved.maxCachedSessions,
@@ -464,6 +497,15 @@ export function apply(ctx: Context, config: Config): void {
   })
   ctx.llm.registerAdapter([resolved.provider], adapter)
   if (resolved.claude.enabled) {
+    const entry: ClaudeRuntimeSettings = {
+      executable: resolved.claude.executable, cwd: resolved.claude.cwd,
+      permissionMode: resolved.claude.permissionMode, timeoutMs: resolved.claude.timeoutMs,
+      modelCacheMs: resolved.claude.modelCacheMs, maxRetries: resolved.claude.maxRetries,
+    }
+    let source = (): ClaudeRuntimeSettings => entry
+    installSettingsSection(ctx, CLAUDE_SETTINGS_NAMESPACE, ClaudeRuntimeSettingsSchema, entry, {
+      setSource: current => { source = current }, onChange: () => {}, validate: validateClaudeSettings,
+    })
     const claudeRuntime = new ClaudeCodeRuntime({
       executable: resolved.claude.executable,
       cwd: resolved.claude.cwd,
@@ -471,11 +513,13 @@ export function apply(ctx: Context, config: Config): void {
       timeoutMs: resolved.claude.timeoutMs,
       modelCacheMs: resolved.claude.modelCacheMs,
       env: resolved.claude.env,
+      resolveSettings: () => source(),
     })
     ctx.llm.registerAdapter([resolved.claude.provider], new ClaudeCodeAdapter({
       provider: resolved.claude.provider,
       displayName: resolved.claude.displayName,
       maxRetries: resolved.claude.maxRetries,
+      resolveMaxRetries: () => source().maxRetries,
       runtime: claudeRuntime,
     }))
   }
@@ -521,4 +565,5 @@ export function apply(ctx: Context, config: Config): void {
     },
   )
   ctx.effect(() => () => adapter.dispose(), 'llm-codex-app-server: dispose cached sessions')
+  if (catalog) ctx.effect(() => () => catalog.dispose(), 'llm-codex-app-server: dispose catalog projection')
 }

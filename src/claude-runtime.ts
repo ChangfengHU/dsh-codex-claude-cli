@@ -46,6 +46,7 @@ export interface ClaudeCodeRuntimeOptions {
   readonly timeoutMs: number
   readonly modelCacheMs: number
   readonly env: Readonly<Record<string, string>>
+  readonly resolveSettings?: () => Omit<ClaudeCodeRuntimeOptions, 'env' | 'resolveSettings'>
 }
 
 const FALLBACK_MODELS: readonly ClaudeCodeModel[] = Object.freeze([
@@ -103,36 +104,43 @@ function delta(message: SDKMessage): ClaudeCodeEvent | undefined {
 
 /** Agent SDK runtime that deliberately reuses native Claude settings and login state. */
 export class ClaudeCodeRuntime implements ClaudeCodeRuntimePort {
-  private models: { readonly expires: number; readonly value: Promise<readonly ClaudeCodeModel[]> } | undefined
+  private models: { readonly epoch: string; readonly expires: number; readonly value: Promise<readonly ClaudeCodeModel[]> } | undefined
 
   constructor(private readonly options: ClaudeCodeRuntimeOptions) {}
 
   listModels(signal?: AbortSignal): Promise<readonly ClaudeCodeModel[]> {
+    const options = { ...this.options, ...this.options.resolveSettings?.() }
+    const epoch = JSON.stringify([options.executable, options.cwd, options.permissionMode, options.modelCacheMs, options.timeoutMs])
     const now = Date.now()
-    if (this.models !== undefined && this.models.expires > now) return this.models.value
-    const value = this.probeModels(signal).catch((error: unknown) => {
+    if (this.models !== undefined && this.models.epoch === epoch && this.models.expires > now) return this.models.value
+    const value = this.probeModels(options, signal).catch((error: unknown) => {
       if (signal?.aborted) throw failure(error)
       return FALLBACK_MODELS
     })
-    this.models = { expires: now + this.options.modelCacheMs, value }
+    this.models = { epoch, expires: now + options.modelCacheMs, value }
     return value
   }
 
-  private async probeModels(signal?: AbortSignal): Promise<readonly ClaudeCodeModel[]> {
+  private async probeModels(options: ClaudeCodeRuntimeOptions, signal?: AbortSignal): Promise<readonly ClaudeCodeModel[]> {
     const controller = new AbortController()
     const abort = () => { controller.abort(signal?.reason) }
     signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted) abort()
+    const timeout = setTimeout(() => controller.abort(new Error('Claude model discovery timed out')), Math.min(options.timeoutMs, 10_000))
     async function* idle(): AsyncIterable<never> {
       await new Promise<void>(resolve => controller.signal.addEventListener('abort', () => resolve(), { once: true }))
     }
-    const executable = await executablePath(this.options.executable)
-    const instance = query({
+    let instance: ReturnType<typeof query> | undefined
+    try {
+      controller.signal.throwIfAborted()
+      const executable = await executablePath(options.executable)
+      instance = query({
       prompt: idle(),
       options: {
         abortController: controller,
         pathToClaudeCodeExecutable: executable,
-        cwd: this.options.cwd,
-        permissionMode: this.options.permissionMode,
+        cwd: options.cwd,
+        permissionMode: options.permissionMode,
         settingSources: ['user', 'project', 'local'],
         persistSession: false,
         tools: [],
@@ -141,18 +149,26 @@ export class ClaudeCodeRuntime implements ClaudeCodeRuntimePort {
           : { env: { ...process.env, ...this.options.env } }),
       },
     })
-    try {
-      const discovered = await instance.supportedModels()
+      const discovered = await Promise.race([
+        instance.supportedModels(),
+        new Promise<never>((_, reject) => {
+          if (controller.signal.aborted) reject(controller.signal.reason)
+          else controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true })
+        }),
+      ])
       if (discovered.length === 0) throw new Error('Claude Code returned an empty model catalog')
       return discovered.map(model)
     } finally {
       controller.abort()
-      instance.close()
+      clearTimeout(timeout)
+      instance?.close()
       signal?.removeEventListener('abort', abort)
     }
   }
 
   async * stream(request: ClaudeCodeStreamRequest): AsyncIterable<ClaudeCodeEvent> {
+    // An accepted turn retains its settings. The next turn reads the new user layer.
+    const options = { ...this.options, ...this.options.resolveSettings?.() }
     const controller = new AbortController()
     const abort = () => { controller.abort(request.signal?.reason) }
     request.signal?.addEventListener('abort', abort, { once: true })
@@ -160,18 +176,18 @@ export class ClaudeCodeRuntime implements ClaudeCodeRuntimePort {
     const timeout = setTimeout(() => {
       timedOut = true
       controller.abort(new Error('Claude Code request timed out'))
-    }, this.options.timeoutMs)
+    }, options.timeoutMs)
     let instance: ReturnType<typeof query> | undefined
     try {
-      const executable = await executablePath(this.options.executable)
+      const executable = await executablePath(options.executable)
       instance = query({
         prompt: request.prompt,
         options: {
           abortController: controller,
           pathToClaudeCodeExecutable: executable,
-          cwd: this.options.cwd,
+          cwd: options.cwd,
           model: request.model,
-          permissionMode: this.options.permissionMode,
+          permissionMode: options.permissionMode,
           settingSources: ['user', 'project', 'local'],
           persistSession: false,
           includePartialMessages: true,

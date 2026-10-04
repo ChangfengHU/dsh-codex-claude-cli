@@ -68,7 +68,7 @@ dsh --profile web --dump-config
 dsh --profile web
 ```
 
-该组合包注册带固定 App Server 模型目录的 `codex-local`，以及读取现有 Claude Code 登录实时模型目录的 `claude-local`。请在 Models UI 中选择提供方和模型；安装不会自动替换 profile 默认模型。
+该组合包注册自动跟随本机 Codex 目录的 `codex-local`，以及读取现有 Claude Code 登录实时模型目录的 `claude-local`。请在 Models UI 中选择提供方和模型；安装不会自动替换 profile 默认模型。
 
 Harness profile 设置了 `autoInstallPeers: false`，因此安装时可能报告缺少 peer dependency。启动时，profile 的模块回退机制会从当前 Harness 安装中提供这些 peer，使插件共享相同的 Cordis 和服务实例。
 
@@ -87,6 +87,10 @@ dsh plugin --profile web remove dsh-codex-claude-cli
 ```
 
 ## 配置
+
+配合 Model Console 时，日常设置入口为 **设置 → Model Console → 接入来源 → Codex**。`autoModels` 默认开启，从当前 `CODEX_HOME/models_cache.json` 读取可见模型与推理档位，并为调用进程生成独立的兼容目录，不修改原生配置或登录。目录未就绪时使用 `models` 中的离线备用条目。
+
+主机可以用 `executable` 指定已安装的新版 Codex CLI；启动时检查版本，并在 App Server 握手中核对相同版本。留空继续使用包内的 0.147.0。较新的模型可能被服务端拒绝通过旧 CLI 调用，应同时使用新版调用端。`networkProxy` 支持 HTTP / Mixed 地址，保存在同一设置命名空间；代理变化会让下一次会话请求重建缓存进程。
 
 在 Web UI 打开“设置 → 插件 → 插件配置”，展开 **Codex App Server** 卡片即可修改 image generation、Codex Web Search 接管、搜索默认模型和最大结果数。卡片使用 DSH 的 `llm-codex-app-server` settings 命名空间，保存后直接写入 DSH 用户设置层；下一次调用即生效，涉及进程能力的变化会通过请求 epoch 自动淘汰旧缓存线程。
 

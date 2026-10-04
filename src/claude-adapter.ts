@@ -23,6 +23,7 @@ export interface ClaudeCodeAdapterOptions {
   readonly provider: string
   readonly displayName: string
   readonly maxRetries: number
+  readonly resolveMaxRetries?: () => number
   readonly runtime: ClaudeCodeRuntimePort
 }
 
@@ -77,7 +78,7 @@ export class ClaudeCodeAdapter extends LlmAdapter {
   override providerRetryPolicy(_provider: string): ResolvedRetryPolicy {
     return {
       mode: 'normal',
-      maxRetries: this.options.maxRetries,
+      maxRetries: this.options.resolveMaxRetries?.() ?? this.options.maxRetries,
       retryableCodes: RETRYABLE_CODES,
       initialDelayMs: 1_000,
       maxDelayMs: 10_000,

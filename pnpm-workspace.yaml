@@ -2,6 +2,9 @@ packages:
   - .
 
 autoInstallPeers: false
+overrides:
+  '@openai/codex-darwin-arm64': file:../../vendor/codex-0.147.0-darwin-arm64.tgz
+  '@anthropic-ai/claude-agent-sdk-darwin-arm64': file:../../vendor/claude-agent-sdk-darwin-arm64-0.3.251.tgz
 
 allowBuilds:
   '@deepseek-ai/dsh-subprocess-local': true

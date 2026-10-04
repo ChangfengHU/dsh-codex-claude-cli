@@ -17,14 +17,23 @@ export interface CodexCapabilitySettings {
   webSearchModel?: string
   /** Maximum merged source count returned by one Harness `web_search` call. */
   webSearchMaxResults?: number
+  /** Optional HTTP/Mixed proxy for Codex requests; empty inherits the service environment. */
+  networkProxy?: string
 }
 
 /** Shared fields used by both the plugin composition schema and settings section. */
-export const codexCapabilitySettingsFields = {
+export const codexCapabilitySettingsFields: {
+  imageGenerationEnabled: z<boolean>
+  webSearchEnabled: z<boolean>
+  webSearchModel: z<string>
+  webSearchMaxResults: z<number>
+  networkProxy: z<string>
+} = {
   imageGenerationEnabled: z.boolean().default(true),
   webSearchEnabled: z.boolean().default(true),
   webSearchModel: z.string(),
   webSearchMaxResults: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(8),
+  networkProxy: z.string().default(''),
 }
 
 /** Settings-service schema rendered and persisted for the Codex capability card. */
@@ -38,6 +47,7 @@ export interface ResolvedCodexCapabilitySettings {
   readonly webSearchEnabled: boolean
   readonly webSearchModel?: string
   readonly webSearchMaxResults: number
+  readonly networkProxy?: string
 }
 
 /** Resolve defaults and constraints that programmatic callers can bypass in the schema. */
@@ -49,6 +59,13 @@ export function resolveCodexCapabilitySettings(
     throw new Error('llm-codex-app-server: webSearchModel is not a safe Codex model id')
   }
   const maxResults = settings.webSearchMaxResults ?? 8
+  const proxy = settings.networkProxy?.trim()
+  if (proxy) {
+    let url: URL
+    try { url = new URL(proxy) } catch { throw new Error('Codex 网络代理必须是 HTTP / HTTPS 地址') }
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/')
+      throw new Error('Codex 网络代理必须是 HTTP / HTTPS 地址，不含账号密码或路径')
+  }
   if (!Number.isSafeInteger(maxResults) || maxResults <= 0) {
     throw new Error('llm-codex-app-server: webSearchMaxResults must be a positive safe integer')
   }
@@ -57,5 +74,6 @@ export function resolveCodexCapabilitySettings(
     webSearchEnabled: settings.webSearchEnabled ?? true,
     ...(model === undefined || model.length === 0 ? {} : { webSearchModel: model }),
     webSearchMaxResults: maxResults,
+    ...(proxy ? { networkProxy: proxy } : {}),
   }
 }

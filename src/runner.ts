@@ -126,6 +126,11 @@ export interface CodexAppServerRunnerOptions {
   readonly env: Readonly<Record<string, string>>
   /** Optional host-owned catalog compatible with the pinned CLI; never changes global Codex config. */
   readonly modelCatalogPath?: string
+  readonly resolveModelCatalogPath?: () => Promise<string | undefined>
+  readonly resolveEnv?: () => Readonly<Record<string, string>>
+  /** Explicit host-owned native CLI; absent uses the bundled pinned CLI. */
+  readonly executable?: string
+  readonly expectedVersion?: string
   readonly spawn: (spec: SubprocessSpawnSpec) => SubprocessHandle
 }
 
@@ -146,6 +151,7 @@ export function codexAppServerArgv(
   webSearch: CodexWebSearchMode = 'disabled',
   imageGenerationEnabled = true,
   modelCatalogPath?: string,
+  executable?: string,
 ): string[] {
   const enabledFeatures = [
     ...CODEX_ALWAYS_ENABLED_FEATURES,
@@ -159,8 +165,7 @@ export function codexAppServerArgv(
   const disabled = disabledFeatures
     .flatMap(feature => ['--disable', feature])
   return [
-    process.execPath,
-    codexCliEntry(),
+    ...(executable ? [executable] : [process.execPath, codexCliEntry()]),
     'app-server',
     '--stdio',
     '--strict-config',
@@ -321,8 +326,10 @@ export class CodexAppServerRunner implements CodexAppServerRunnerPort {
     request.signal?.addEventListener('abort', onAbort, { once: true })
     try {
       if (request.signal?.aborted) throw request.signal.reason
+      const modelCatalogPath = await this.options.resolveModelCatalogPath?.() ?? this.options.modelCatalogPath
+      if (request.signal?.aborted) throw request.signal.reason
       child = this.options.spawn({
-        argv: codexAppServerArgv(request.webSearch, request.imageGenerationEnabled, this.options.modelCatalogPath),
+        argv: codexAppServerArgv(request.webSearch, request.imageGenerationEnabled, modelCatalogPath, this.options.executable),
         cwd: workdir,
         stdio: {
           stdin: 'pipe',
@@ -333,6 +340,7 @@ export class CodexAppServerRunner implements CodexAppServerRunnerPort {
         signal: lifetime.signal,
         env: {
           ...this.options.env,
+          ...this.options.resolveEnv?.(),
           CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'deepseek-harness',
         },
       })
@@ -365,7 +373,7 @@ export class CodexAppServerRunner implements CodexAppServerRunnerPort {
         },
       }), 'initialize result')
       if (typeof initialized.userAgent !== 'string'
-        || !initialized.userAgent.includes(CODEX_APP_SERVER_VERSION)) {
+        || !initialized.userAgent.includes(this.options.expectedVersion ?? CODEX_APP_SERVER_VERSION)) {
         throw new LlmError(
           `Codex App Server version mismatch: ${JSON.stringify(initialized.userAgent)}`,
           'PROTOCOL_VERSION',

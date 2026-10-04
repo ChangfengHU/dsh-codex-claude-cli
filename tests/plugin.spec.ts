@@ -41,9 +41,9 @@ async function context(): Promise<Context> {
 }
 
 describe('plugin composition', () => {
-  it('materializes the default model catalog through Cordis config parsing', async () => {
+  it('materializes the offline model catalog when native auto-discovery is disabled', async () => {
     const ctx = await context()
-    await ctx.plugin(CodexAppServer, {})
+    await ctx.plugin(CodexAppServer, { autoModels: false })
 
     expect(ctx.llm.listProviders()).toContainEqual({
       id: 'codex-local',

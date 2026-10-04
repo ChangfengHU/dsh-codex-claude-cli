@@ -4,6 +4,10 @@ settings:
   autoInstallPeers: false
   excludeLinksFromLockfile: false
 
+overrides:
+  '@openai/codex-darwin-arm64': file:../../vendor/codex-0.147.0-darwin-arm64.tgz
+  '@anthropic-ai/claude-agent-sdk-darwin-arm64': file:../../vendor/claude-agent-sdk-darwin-arm64-0.3.251.tgz
+
 importers:
 
   .:
@@ -117,8 +121,9 @@ importers:
 
 packages:
 
-  '@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.251':
-    resolution: {integrity: sha512-C23h+Dbddcc4gai95+lhm4/94am2IOq+bf3IdEDDS7EPqDQqajo2s5q1/ZSwq9rOc0RJLT7Ws72ZCzYJh67KSg==}
+  '@anthropic-ai/claude-agent-sdk-darwin-arm64@file:../../vendor/claude-agent-sdk-darwin-arm64-0.3.251.tgz':
+    resolution: {integrity: sha512-C23h+Dbddcc4gai95+lhm4/94am2IOq+bf3IdEDDS7EPqDQqajo2s5q1/ZSwq9rOc0RJLT7Ws72ZCzYJh67KSg==, tarball: file:../../vendor/claude-agent-sdk-darwin-arm64-0.3.251.tgz}
+    version: 0.3.251
     cpu: [arm64]
     os: [darwin]
 
@@ -531,12 +536,6 @@ packages:
     engines: {node: '>=16'}
     hasBin: true
 
-  '@openai/codex@0.147.0-darwin-arm64':
-    resolution: {integrity: sha512-BEUVkiOW7kLcRyrMLfAr/h9wF8sRVJyZDy6OHtVn6QGDXiv3BvAZVTY1Pu9xF7KdIdkYXbp4uayN0aDQQaAUJw==}
-    engines: {node: '>=16'}
-    cpu: [arm64]
-    os: [darwin]
-
   '@openai/codex@0.147.0-darwin-x64':
     resolution: {integrity: sha512-Tb8McE5SvJIH0Vs5R6sq7u+quiC931yan2KOOl6km1OdZ82+Wi7eF5XrSFPs5CF7xCgoIK4Vs+byMbT5hN+ZUw==}
     engines: {node: '>=16'}
@@ -566,6 +565,13 @@ packages:
     engines: {node: '>=16'}
     cpu: [x64]
     os: [win32]
+
+  '@openai/codex@file:../../vendor/codex-0.147.0-darwin-arm64.tgz':
+    resolution: {integrity: sha512-BEUVkiOW7kLcRyrMLfAr/h9wF8sRVJyZDy6OHtVn6QGDXiv3BvAZVTY1Pu9xF7KdIdkYXbp4uayN0aDQQaAUJw==, tarball: file:../../vendor/codex-0.147.0-darwin-arm64.tgz}
+    version: 0.147.0-darwin-arm64
+    engines: {node: '>=16'}
+    cpu: [arm64]
+    os: [darwin]
 
   '@oxc-project/types@0.139.0':
     resolution: {integrity: sha512-r9gHphtCs+1M7J0pw6Sn/hh/Wpa/iQrOOkrNAlVLF/gHq+/CJmHIWKKUUhdWjcD6CIa8idarspCsASiXCXvFUw==}
@@ -1620,7 +1626,7 @@ packages:
 
 snapshots:
 
-  '@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.251':
+  '@anthropic-ai/claude-agent-sdk-darwin-arm64@file:../../vendor/claude-agent-sdk-darwin-arm64-0.3.251.tgz':
     optional: true
 
   '@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.251':
@@ -1646,7 +1652,7 @@ snapshots:
 
   '@anthropic-ai/claude-agent-sdk@0.3.251':
     optionalDependencies:
-      '@anthropic-ai/claude-agent-sdk-darwin-arm64': 0.3.251
+      '@anthropic-ai/claude-agent-sdk-darwin-arm64': file:../../vendor/claude-agent-sdk-darwin-arm64-0.3.251.tgz
       '@anthropic-ai/claude-agent-sdk-darwin-x64': 0.3.251
       '@anthropic-ai/claude-agent-sdk-linux-arm64': 0.3.251
       '@anthropic-ai/claude-agent-sdk-linux-arm64-musl': 0.3.251
@@ -1967,15 +1973,12 @@ snapshots:
 
   '@openai/codex@0.147.0':
     optionalDependencies:
-      '@openai/codex-darwin-arm64': '@openai/codex@0.147.0-darwin-arm64'
+      '@openai/codex-darwin-arm64': '@openai/codex@file:../../vendor/codex-0.147.0-darwin-arm64.tgz'
       '@openai/codex-darwin-x64': '@openai/codex@0.147.0-darwin-x64'
       '@openai/codex-linux-arm64': '@openai/codex@0.147.0-linux-arm64'
       '@openai/codex-linux-x64': '@openai/codex@0.147.0-linux-x64'
       '@openai/codex-win32-arm64': '@openai/codex@0.147.0-win32-arm64'
       '@openai/codex-win32-x64': '@openai/codex@0.147.0-win32-x64'
-
-  '@openai/codex@0.147.0-darwin-arm64':
-    optional: true
 
   '@openai/codex@0.147.0-darwin-x64':
     optional: true
@@ -1990,6 +1993,9 @@ snapshots:
     optional: true
 
   '@openai/codex@0.147.0-win32-x64':
+    optional: true
+
+  '@openai/codex@file:../../vendor/codex-0.147.0-darwin-arm64.tgz':
     optional: true
 
   '@oxc-project/types@0.139.0': {}

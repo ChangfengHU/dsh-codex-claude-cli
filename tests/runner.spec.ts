@@ -151,6 +151,19 @@ async function collectTurn(
 }
 
 describe('Codex App Server runner', () => {
+  it('uses an explicit native CLI with a verified handshake and live process settings', async () => {
+    const instance = runner(standardScript(send => {
+      send({ method: 'turn/completed', params: { turn: { id: 'turn-1', status: 'completed' } } })
+    }), {
+      executable: '/host/native-codex', expectedVersion: CODEX_APP_SERVER_VERSION,
+      resolveModelCatalogPath: async () => '/private/native-catalog.json',
+      resolveEnv: () => ({ HTTPS_PROXY: 'http://127.0.0.1:7897' }),
+    })
+    await collect(instance.runner, request())
+    expect(instance.spec().argv[0]).toBe('/host/native-codex')
+    expect(instance.spec().argv).toContain('model_catalog_json="/private/native-catalog.json"')
+    expect(instance.spec().env).toMatchObject({ HTTPS_PROXY: 'http://127.0.0.1:7897' })
+  })
   it('overrides only the process catalog and diagnoses incompatible catalog after EOF', async () => {
     expect(codexAppServerArgv('disabled', true, '/host/catalog.json')).toContain('model_catalog_json="/host/catalog.json"')
     const child = scriptedHandle(() => { queueMicrotask(() => { child.stdout?.push(null) }) })

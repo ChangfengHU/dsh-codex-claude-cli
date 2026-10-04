@@ -110,6 +110,7 @@ function instance(
   resolveAttachments: () => CodexImageStorePort | undefined = () => undefined,
   maxRequestImageBytes = 20 * 1024 * 1024,
   resolveImageGenerationEnabled: () => boolean = () => true,
+  resolveNetworkProxy: () => string | undefined = () => undefined,
 ): CodexAppServerAdapter {
   return new CodexAppServerAdapter({
     provider: 'codex-local',
@@ -130,6 +131,7 @@ function instance(
     onCleanupError: vi.fn(),
     resolveAttachments,
     resolveImageGenerationEnabled,
+    resolveNetworkProxy,
     runner,
   })
 }
@@ -160,6 +162,7 @@ function cachedAdapter(
   turns: readonly (readonly CodexAppServerEvent[])[],
   resolveAttachments: () => CodexImageStorePort | undefined = () => undefined,
   resolveImageGenerationEnabled: () => boolean = () => true,
+  resolveNetworkProxy: () => string | undefined = () => undefined,
 ) {
   const requests: CodexAppServerTurnRequest[] = []
   const thread: CodexAppServerThreadPort = {
@@ -181,6 +184,7 @@ function cachedAdapter(
       resolveAttachments,
       20 * 1024 * 1024,
       resolveImageGenerationEnabled,
+      resolveNetworkProxy,
     ),
     open,
     oneShot,
@@ -636,6 +640,28 @@ describe('CodexAppServerAdapter', () => {
       injectedItems: expect.arrayContaining([expect.objectContaining({ role: 'user' })]),
       input: [],
     })
+    await cached.adapter.dispose()
+  })
+
+  it('rebuilds a cached session on a proxy change instead of keeping the old network exit', async () => {
+    let proxy = 'http://127.0.0.1:7897'
+    const cached = cachedAdapter([
+      answerEvents('1', 'first answer'), answerEvents('2', 'second answer'),
+    ], () => undefined, () => true, () => proxy)
+    const firstRequest = request({ sessionId: SessionId('session-proxy') })
+    const chunks = await collect(cached.adapter, firstRequest)
+    const answer: Message = {
+      id: MessageId('assistant-proxy'), role: 'assistant',
+      source: { kind: 'model', provider: 'codex-local', model: 'gpt-5.6-sol', replayState: replayState(chunks) },
+      content: [{ type: 'text', text: 'first answer' }],
+    }
+    proxy = 'http://127.0.0.1:7890'
+    await collect(cached.adapter, request({ sessionId: SessionId('session-proxy'), messages: [
+      ...firstRequest.messages, answer,
+      { id: MessageId('user-proxy'), role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'follow up' }] },
+    ] }))
+    expect(cached.open).toHaveBeenCalledTimes(2)
+    expect(cached.requests[1]).toMatchObject({ injectedItems: expect.any(Array), input: [] })
     await cached.adapter.dispose()
   })
 

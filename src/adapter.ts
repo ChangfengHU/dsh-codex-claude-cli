@@ -53,6 +53,9 @@ export interface CodexAdapterOptions {
   readonly displayName: string
   readonly modelProvider: string
   readonly models: readonly CodexModel[]
+  readonly resolveModels?: () => Promise<readonly CodexModel[]>
+  readonly resolveNetworkProxy?: () => string | undefined
+  readonly appServerVersion?: string
   readonly maxRetries: number
   readonly maxRequestImageBytes: number
   readonly maxCachedSessions: number
@@ -105,16 +108,18 @@ export class CodexAppServerAdapter extends LlmAdapter {
     }
   }
 
-  override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    return Promise.resolve(this.options.models.map(model => modelInfo(provider, model)))
+  override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    const models = await this.options.resolveModels?.() ?? this.options.models
+    return models.map(model => modelInfo(provider, model))
   }
 
-  override resolveModel(
+  override async resolveModel(
     provider: string,
     model: string,
     _signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo> {
-    const configured = this.options.models.find(candidate => candidate.id === model)
+    const models = await this.options.resolveModels?.() ?? this.options.models
+    const configured = models.find(candidate => candidate.id === model)
     const fallback: CodexModel = {
       id: model,
       name: model,
@@ -158,7 +163,8 @@ export class CodexAppServerAdapter extends LlmAdapter {
       )
     }
     const hasImages = options.messages.some(message => contentHasImage(message.content))
-    const configuredModel = this.options.models.find(model => model.id === options.model)
+    const models = await this.options.resolveModels?.() ?? this.options.models
+    const configuredModel = models.find(model => model.id === options.model)
     if (hasImages && configuredModel?.inputModalities.includes('image') !== true) {
       throw new LlmError(
         `Codex model "${options.model}" does not accept image input`,
@@ -277,7 +283,7 @@ export class CodexAppServerAdapter extends LlmAdapter {
   ): JsonValue {
     return {
       version: 1,
-      appServerVersion: CODEX_APP_SERVER_VERSION,
+      appServerVersion: this.options.appServerVersion ?? CODEX_APP_SERVER_VERSION,
       provider: options.provider,
       modelProvider: this.options.modelProvider,
       model: options.model,
@@ -285,6 +291,7 @@ export class CodexAppServerAdapter extends LlmAdapter {
       system: options.system ?? '',
       dynamicTools: [...dynamicTools],
       imageGenerationEnabled,
+      networkProxy: this.options.resolveNetworkProxy?.() ?? null,
       maxRequestImageBytes: this.options.maxRequestImageBytes,
       threadPolicy: 'harness-read-only-no-native-compaction-image-input-v1',
     }

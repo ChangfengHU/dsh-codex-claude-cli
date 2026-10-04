@@ -36,6 +36,12 @@ When App Server requests a declared tool in the `deepseek_harness` namespace, th
 
 Auxiliary work follows the initiating Agent's provider instead of silently switching accounts. A `compaction-basic` request with no explicit summarization route uses the selected Codex model in a one-shot process and commits only its completed text as the durable Harness checkpoint. A `web_search` call from a Codex Agent is conditionally intercepted before the configured Web provider: each query runs native live search in its own one-shot App Server process, URL citations are projected back through the existing Harness tool output contract, and every non-Codex Agent delegates to the original provider chain unchanged. Search cannot reuse the main process because that thread is waiting for the Harness tool result.
 
+## Native catalog and current CLI
+
+`autoModels` defaults to true. The provider follows visible entries and reasoning metadata from the native `CODEX_HOME/models_cache.json`, creating a private process-compatible copy without modifying native configuration or authentication. `models` is the offline fallback; set `autoModels: false` to use an explicitly managed list.
+
+A host may set `executable` to an installed current Codex CLI. Its version is verified at startup and during the App Server handshake; leaving it blank keeps the bundled 0.147.0 fallback. New models may require a newer CLI. With Model Console installed, configure capabilities and `networkProxy` under **Settings → Model Console → Sources → Codex**. Proxy changes invalidate cached sessions on the next request.
+
 ## Install
 
 Authenticate the native CLI once:
