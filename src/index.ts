@@ -19,7 +19,8 @@ import { SAFE_MODEL_ID, SAFE_REASONING_EFFORT } from './identifiers.ts'
 import { CodexAppServerRunner } from './runner.ts'
 import { CodexModelCatalog } from './model-catalog.ts'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
+import { realpath } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
@@ -447,7 +448,11 @@ async function runCodexSearches(
 /** Register the configured Codex App Server route on `ctx.llm`. */
 export async function apply(ctx: Context, config: Config): Promise<void> {
   const resolved = resolveConfig(config)
-  const executable = config.executable?.trim() || undefined
+  const configuredExecutable = config.executable?.trim() || undefined
+  // Keep the checked binary stable if a native CLI updater moves its symlink.
+  const executable = configuredExecutable && isAbsolute(configuredExecutable)
+    ? await realpath(configuredExecutable)
+    : configuredExecutable
   let nativeVersion: string | undefined
   if (executable) {
     const result = await promisify(execFile)(executable, ['--version'], { timeout: 5000, maxBuffer: 8192 })

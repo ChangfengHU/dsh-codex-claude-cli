@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtemp, rm, symlink, unlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
@@ -41,6 +45,39 @@ async function context(): Promise<Context> {
 }
 
 describe('plugin composition', () => {
+  it('pins an absolute native CLI symlink to the binary whose version was checked', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-native-cli-version-'))
+    const original = join(dir, 'original-codex')
+    const upgraded = join(dir, 'upgraded-codex')
+    const executable = join(dir, 'codex')
+    const ctx = await context()
+    try {
+      await writeFile(original, '#!/bin/sh\nprintf "codex-cli 0.161.0\\n"\n', { mode: 0o700 })
+      await writeFile(upgraded, '#!/bin/sh\nprintf "codex-cli 0.162.0\\n"\n', { mode: 0o700 })
+      await symlink(original, executable)
+      await ctx.plugin(CodexAppServer, { executable, autoModels: false, claudeEnabled: false })
+      await unlink(executable)
+      await symlink(upgraded, executable)
+      const spawn = vi.spyOn(ctx.subprocess, 'spawn').mockImplementation(() => {
+        throw new Error('stopped-before-model-request')
+      })
+      try {
+        for await (const _ of ctx.llm.stream({
+          provider: 'codex-local', model: 'gpt-5.6-sol', system: 'test', tools: [],
+          messages: [createUserMessage({ content: [{ type: 'text', text: 'test' }], source: { kind: 'user' } })],
+          signal: new AbortController().signal,
+        })) { /* the runtime reports the intercepted request as an error block */ }
+        expect(spawn).toHaveBeenCalledOnce()
+        expect(spawn.mock.calls[0]?.[0].argv[0]).toBe(original)
+      } finally {
+        spawn.mockRestore()
+      }
+    } finally {
+      await ctx.fiber.dispose()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('materializes the offline model catalog when native auto-discovery is disabled', async () => {
     const ctx = await context()
     await ctx.plugin(CodexAppServer, { autoModels: false })

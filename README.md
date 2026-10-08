@@ -40,7 +40,7 @@ Auxiliary work follows the initiating Agent's provider instead of silently switc
 
 `autoModels` defaults to true. The provider follows visible entries and reasoning metadata from the native `CODEX_HOME/models_cache.json`, creating a private process-compatible copy without modifying native configuration or authentication. `models` is the offline fallback; set `autoModels: false` to use an explicitly managed list.
 
-A host may set `executable` to an installed current Codex CLI. Its version is verified at startup and during the App Server handshake; leaving it blank keeps the bundled 0.147.0 fallback. New models may require a newer CLI. With Model Console installed, configure capabilities and `networkProxy` under **Settings → Model Console → Sources → Codex**. Proxy changes invalidate cached sessions on the next request.
+A host may set `executable` to an installed current Codex CLI. Absolute paths are resolved to the actual binary at startup so a native CLI updater cannot move a symlink away from the checked version while the provider is running. Its version is verified at startup and during the App Server handshake; leaving it blank keeps the bundled 0.147.0 fallback. To adopt a newer native binary, reload this provider with its intended executable. New models may require a newer CLI. With Model Console installed, configure capabilities and `networkProxy` under **Settings → Model Console → Sources → Codex**. Proxy changes invalidate cached sessions on the next request.
 
 ## Install
 
